@@ -10,6 +10,8 @@ Fabric REST API routes
 from __future__ import annotations
 import asyncio
 import base64, json, uuid
+from datetime import datetime
+from pathlib import Path
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -19,8 +21,104 @@ router = APIRouter()
 
 FABRIC_API = "https://api.fabric.microsoft.com/v1"
 
-# In-memory token store (single-user; replace with session store for multi-user)
+# In-memory token store (legacy — kept for /set-token backward compatibility)
 _ms_token: dict = {}
+
+# ── Persistent UI Connection Store ────────────────────────────────────────────
+_STORE_FILE = Path(__file__).parent.parent.parent / "connections.json"
+
+
+class _ConnectionStore:
+    """
+    Stores named Fabric connections in connections.json (persists across restarts).
+    Each entry: { id, name, token, workspace_id, note, created_at, status }
+    One connection can be marked 'active'; its token is used for all Fabric calls.
+    """
+
+    def __init__(self):
+        self._data: dict = {"connections": [], "active_id": None}
+        self._load()
+
+    def _load(self):
+        try:
+            if _STORE_FILE.exists():
+                self._data = json.loads(_STORE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    def _save(self):
+        try:
+            _STORE_FILE.write_text(
+                json.dumps(self._data, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    # ── Accessors ──────────────────────────────────────────────────────────────
+    def all(self) -> list:
+        return self._data.get("connections", [])
+
+    def get(self, cid: str) -> dict | None:
+        return next((c for c in self.all() if c["id"] == cid), None)
+
+    @property
+    def active_id(self) -> str | None:
+        return self._data.get("active_id")
+
+    def active_token(self) -> str | None:
+        """Return the token for the active connection, falling back to legacy _ms_token."""
+        aid = self.active_id
+        if aid:
+            conn = self.get(aid)
+            if conn and conn.get("token"):
+                return conn["token"]
+        return _ms_token.get("access_token") or None
+
+    # ── Mutators ───────────────────────────────────────────────────────────────
+    def add(self, name: str, token: str, workspace_id: str = "", note: str = "") -> dict:
+        cid = str(uuid.uuid4())
+        conn = {
+            "id":           cid,
+            "name":         name,
+            "token":        token,
+            "workspace_id": workspace_id,
+            "note":         note,
+            "created_at":   datetime.utcnow().isoformat(),
+            "status":       "unknown",
+        }
+        self._data.setdefault("connections", []).append(conn)
+        if len(self.all()) == 1:          # auto-activate first connection
+            self._data["active_id"] = cid
+        self._save()
+        return conn
+
+    def delete(self, cid: str):
+        self._data["connections"] = [c for c in self.all() if c["id"] != cid]
+        if self.active_id == cid:
+            remaining = self.all()
+            self._data["active_id"] = remaining[0]["id"] if remaining else None
+        self._save()
+
+    def activate(self, cid: str):
+        if not self.get(cid):
+            raise KeyError(cid)
+        self._data["active_id"] = cid
+        self._save()
+
+    def set_status(self, cid: str, status: str):
+        conn = self.get(cid)
+        if conn:
+            conn["status"] = status
+            self._save()
+
+    def update_workspace(self, cid: str, workspace_id: str):
+        conn = self.get(cid)
+        if conn:
+            conn["workspace_id"] = workspace_id
+            self._save()
+
+
+_conn_store = _ConnectionStore()
 
 # ── ERP → Fabric Connection Types ─────────────────────────────────────────────
 ERP_FABRIC_CONNECTION_TYPES: dict[str, list[dict]] = {
@@ -212,9 +310,17 @@ ERP_FABRIC_CONNECTION_TYPES: dict[str, list[dict]] = {
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 def _get_token() -> str:
-    token = _ms_token.get("access_token", "")
+    """
+    Return the active Fabric Bearer token.
+    Priority: active UI connection → legacy /set-token store.
+    """
+    token = _conn_store.active_token()
     if not token:
-        raise HTTPException(401, "MS365 token not active. Set it via /api/fabric/set-token.")
+        raise HTTPException(
+            401,
+            "MS365 token not active — connection simulated. "
+            "Add a Fabric connection in Settings for live deployment.",
+        )
     return token
 
 
@@ -726,6 +832,134 @@ async def deploy(req: DeployRequest):
         "artifacts":    artifacts,
         "workspace_id": ws,
         "note": ("" if live
-                 else "MS365 token not active — all artifacts simulated. "
-                      "Set a token in Settings to deploy to real Fabric."),
+                 else "No active Fabric connection — all artifacts simulated. "
+                      "Add a connection in Settings → Fabric Connections."),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UI-managed Fabric Connections  (persisted to connections.json)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mask(token: str) -> str:
+    """Return last-8 chars preceded by bullets, safe for display."""
+    if not token:
+        return ""
+    suffix = token[-8:] if len(token) >= 8 else token
+    return "•" * 20 + suffix
+
+
+class SaveConnectionRequest(BaseModel):
+    name:         str
+    token:        str
+    workspace_id: str = ""
+    note:         str = ""
+
+
+@router.get("/fabric-connections")
+async def list_fabric_connections():
+    """Return all UI-saved connections (tokens masked) + which is active."""
+    conns = _conn_store.all()
+    aid   = _conn_store.active_id
+    return {
+        "connections": [
+            {
+                **{k: v for k, v in c.items() if k != "token"},
+                "token_masked": _mask(c.get("token", "")),
+                "active":       c["id"] == aid,
+            }
+            for c in conns
+        ],
+        "active_id": aid,
+        "count":     len(conns),
+    }
+
+
+@router.post("/fabric-connections")
+async def save_fabric_connection(req: SaveConnectionRequest):
+    """Add a new named Fabric connection and auto-test it."""
+    if not req.name or not req.token:
+        raise HTTPException(400, "name and token are required")
+    conn = _conn_store.add(req.name, req.token, req.workspace_id, req.note)
+    # Quick test
+    status = "unknown"
+    workspaces: list = []
+    try:
+        data       = await _fabric_get(req.token, f"{FABRIC_API}/workspaces")
+        workspaces = data.get("value", [])
+        status     = "valid"
+        _conn_store.set_status(conn["id"], "valid")
+        if req.workspace_id == "" and workspaces:
+            # auto-fill workspace_id from first workspace if not provided
+            pass
+    except Exception:
+        status = "invalid"
+        _conn_store.set_status(conn["id"], "invalid")
+
+    return {
+        "status":      "saved",
+        "id":          conn["id"],
+        "name":        conn["name"],
+        "test_result": status,
+        "workspaces":  [{"id": w["id"], "name": w.get("displayName", "")}
+                        for w in workspaces[:10]],
+    }
+
+
+@router.delete("/fabric-connections/{cid}")
+async def delete_fabric_connection(cid: str):
+    """Delete a saved connection by ID."""
+    if not _conn_store.get(cid):
+        raise HTTPException(404, f"Connection {cid} not found")
+    _conn_store.delete(cid)
+    return {"status": "deleted", "id": cid}
+
+
+@router.post("/fabric-connections/{cid}/activate")
+async def activate_fabric_connection(cid: str):
+    """Set a connection as the active one used for all Fabric API calls."""
+    try:
+        _conn_store.activate(cid)
+    except KeyError:
+        raise HTTPException(404, f"Connection {cid} not found")
+    conn = _conn_store.get(cid)
+    return {"status": "activated", "id": cid, "name": conn["name"] if conn else ""}
+
+
+@router.post("/fabric-connections/{cid}/test")
+async def test_fabric_connection(cid: str):
+    """Test a saved connection by calling GET /workspaces with its token."""
+    conn = _conn_store.get(cid)
+    if not conn:
+        raise HTTPException(404, f"Connection {cid} not found")
+    try:
+        data       = await _fabric_get(conn["token"], f"{FABRIC_API}/workspaces")
+        workspaces = data.get("value", [])
+        _conn_store.set_status(cid, "valid")
+        return {
+            "status":          "valid",
+            "workspace_count": len(workspaces),
+            "workspaces": [
+                {"id": w["id"], "name": w.get("displayName", "")}
+                for w in workspaces[:10]
+            ],
+        }
+    except HTTPException as exc:
+        _conn_store.set_status(cid, "invalid")
+        return {"status": "invalid", "error": exc.detail}
+    except Exception as exc:
+        _conn_store.set_status(cid, "invalid")
+        return {"status": "invalid", "error": str(exc)}
+
+
+@router.patch("/fabric-connections/{cid}")
+async def update_fabric_connection(cid: str, body: dict):
+    """Update name / workspace_id / note for a saved connection."""
+    conn = _conn_store.get(cid)
+    if not conn:
+        raise HTTPException(404, f"Connection {cid} not found")
+    if "name"         in body: conn["name"]         = body["name"]
+    if "workspace_id" in body: conn["workspace_id"] = body["workspace_id"]
+    if "note"         in body: conn["note"]         = body["note"]
+    _conn_store._save()
+    return {"status": "updated", "id": cid}
