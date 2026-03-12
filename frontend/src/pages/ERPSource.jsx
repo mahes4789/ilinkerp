@@ -16,7 +16,7 @@ import {
   FileCode, GitBranch, Cloud, Info, Circle, Eye, EyeOff,
   Zap, Layers, Table2, Link2, Shield, Package, LayoutDashboard,
   Search, ListChecks, ExternalLink, Key, Monitor, User,
-  Plus, Star, Wifi, WifiOff, Copy,
+  Plus, Star, Wifi, WifiOff, Copy, Code, Terminal, ChevronDown, ChevronUp,
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -1676,49 +1676,122 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
 
 // ── Step 5: Deploy ────────────────────────────────────────────────────────────
 function StepDeploy({ wizard, onBack }) {
-  const [opts,          setOpts]          = useState({ bronze: true, silver: true, gold: true, pipeline: true });
-  const [result,        setResult]        = useState(null);
-  const [verifying,     setVerifying]     = useState(false);
-  const [verifyItems,   setVerifyItems]   = useState(null);   // null | { items[], total }
+  // ── Core state ────────────────────────────────────────────────────────────
+  const [opts,        setOpts]        = useState({ bronze: true, silver: true, gold: true, pipeline: true });
+  const [result,      setResult]      = useState(null);
+  const [verifying,   setVerifying]   = useState(false);
+  const [verifyItems, setVerifyItems] = useState(null);
 
+  // Notebook kernel per layer: "pyspark" (default) or "sql"
+  const [notebookTypes, setNotebookTypes] = useState({ bronze: "pyspark", silver: "pyspark", gold: "pyspark" });
+
+  // Code preview & editor
+  const [codePreview,    setCodePreview]    = useState({});   // raw from backend
+  const [customCode,     setCustomCode]     = useState({});   // user-edited overrides
+  const [showPreview,    setShowPreview]    = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [activeCodeTab,  setActiveCodeTab]  = useState("bronze");
+
+  // Custom SQL per table per layer
+  const [sqlConfig,       setSqlConfig]       = useState({});  // { table: { bronze, silver, gold } }
+  const [sqlExpandedTable, setSqlExpandedTable] = useState(null);
+  const [sqlActiveLayer,   setSqlActiveLayer]   = useState("bronze");
+
+  // Error expansion in results table
+  const [expandedErrors, setExpandedErrors] = useState(new Set());
+
+  const tables = wizard.discoveredTables ?? [];
+
+  // ── Derived SQL dicts (for deploy & preview payloads) ────────────────────
+  const custom_sql = Object.fromEntries(
+    Object.entries(sqlConfig).filter(([, v]) => v.bronze?.trim()).map(([t, v]) => [t, v.bronze])
+  );
+  const silver_sql = Object.fromEntries(
+    Object.entries(sqlConfig).filter(([, v]) => v.silver?.trim()).map(([t, v]) => [t, v.silver])
+  );
+  const gold_sql = Object.fromEntries(
+    Object.entries(sqlConfig).filter(([, v]) => v.gold?.trim()).map(([t, v]) => [t, v.gold])
+  );
+  const custom_notebook_code = Object.fromEntries(
+    Object.entries(customCode).filter(([k, v]) => k !== "pipeline" && v?.trim())
+  );
+  const custom_pipeline_json = customCode.pipeline?.trim() ?? "";
+
+  // ── Deploy mutation ───────────────────────────────────────────────────────
   const deployMutation = useMutation({
     mutationFn: () =>
       axios.post(`${API}/api/fabric/deploy`, {
-        workspace_id:    wizard.fabricWorkspace?.workspace_id ?? "",
-        lakehouse_id:    wizard.fabricWorkspace?.lakehouse_id ?? "",
-        source_type:     wizard.source,
-        module:          wizard.module,
-        connection_id:   wizard.connectionId   ?? "",
-        connection_name: wizard.connectionName ?? "",
-        selected_tables: wizard.discoveredTables ?? [],
-        create_bronze:   opts.bronze,
-        create_silver:   opts.silver,
-        create_gold:     opts.gold,
-        create_pipeline: opts.pipeline,
+        workspace_id:         wizard.fabricWorkspace?.workspace_id ?? "",
+        lakehouse_id:         wizard.fabricWorkspace?.lakehouse_id ?? "",
+        source_type:          wizard.source,
+        module:               wizard.module,
+        connection_id:        wizard.connectionId   ?? "",
+        connection_name:      wizard.connectionName ?? "",
+        selected_tables:      tables,
+        create_bronze:        opts.bronze,
+        create_silver:        opts.silver,
+        create_gold:          opts.gold,
+        create_pipeline:      opts.pipeline,
+        custom_sql,
+        silver_sql,
+        gold_sql,
+        notebook_types:       notebookTypes,
+        custom_notebook_code,
+        custom_pipeline_json,
       }).then(r => r.data),
     onSuccess: data => {
       setResult(data);
       setVerifyItems(null);
-      // Save session to localStorage
+      setExpandedErrors(new Set());
       try {
         const sessions = JSON.parse(localStorage.getItem("ilink_sessions") ?? "[]");
         sessions.unshift({
-          id:        Date.now(),
-          source:    wizard.sourceName,
-          module:    wizard.moduleName,
-          date:      new Date().toISOString(),
-          artifacts: data.total,
-          live:      data.live,
+          id: Date.now(), source: wizard.sourceName, module: wizard.moduleName,
+          date: new Date().toISOString(), artifacts: data.total, live: data.live,
         });
         localStorage.setItem("ilink_sessions", JSON.stringify(sessions.slice(0, 10)));
       } catch {}
       if (data.live) toast.success(`Deployed ${data.total} artifact(s) to Fabric!`);
       else           toast("Deployment simulated — add MS365 token for live deploy", { icon: "ℹ️" });
     },
-    onError: () => toast.error("Deployment failed"),
+    onError: (err) => {
+      const detail = err.response?.data?.detail ?? err.message ?? "Deployment failed";
+      toast.error(detail);
+    },
   });
 
-  // ── Verify deployed artifacts in Fabric ─────────────────────────────────────
+  // ── Fetch code preview from backend ──────────────────────────────────────
+  const fetchPreview = async () => {
+    setPreviewLoading(true);
+    try {
+      const resp = await axios.post(`${API}/api/fabric/preview-notebooks`, {
+        source_type:     wizard.source,
+        module:          wizard.module,
+        selected_tables: tables,
+        create_bronze:   opts.bronze,
+        create_silver:   opts.silver,
+        create_gold:     opts.gold,
+        create_pipeline: opts.pipeline,
+        custom_sql,
+        silver_sql,
+        gold_sql,
+        notebook_types:  notebookTypes,
+      });
+      const layers = resp.data.layers ?? {};
+      setCodePreview(layers);
+      // Reset user edits when re-generating
+      setCustomCode({});
+      setShowPreview(true);
+      const available = ["bronze", "silver", "gold", "pipeline"].filter(k => layers[k]);
+      if (available.length > 0) setActiveCodeTab(available[0]);
+    } catch (e) {
+      toast.error("Failed to generate code preview");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // ── Verify deployed artifacts ─────────────────────────────────────────────
   const verifyArtifacts = async () => {
     const wsId = wizard.fabricWorkspace?.workspace_id;
     if (!wsId) { toast.error("No workspace ID set"); return; }
@@ -1728,11 +1801,7 @@ function StepDeploy({ wizard, onBack }) {
         axios.get(`${API}/api/fabric/workspaces/${wsId}/items?type=Notebook`),
         axios.get(`${API}/api/fabric/workspaces/${wsId}/items?type=DataPipeline`),
       ]);
-      const allItems = [
-        ...(nbRes.data.items ?? []),
-        ...(plRes.data.items ?? []),
-      ];
-      // Mark which deployed artifacts are confirmed in Fabric
+      const allItems = [...(nbRes.data.items ?? []), ...(plRes.data.items ?? [])];
       const deployedNames = (result?.artifacts ?? []).map(a => a.name);
       const matched = allItems.filter(i => deployedNames.includes(i.name));
       setVerifyItems({ items: allItems, matched, total: allItems.length });
@@ -1750,8 +1819,37 @@ function StepDeploy({ wizard, onBack }) {
 
   const artifacts = result?.artifacts ?? [];
 
+  // ── SQL layer placeholder ─────────────────────────────────────────────────
+  const sqlPlaceholder = (table, layer) => {
+    if (layer === "bronze") return `SELECT * FROM ${table}`;
+    if (layer === "silver") return `SELECT DISTINCT *\nFROM bronze.${table.toLowerCase()}\nWHERE 1=1  -- add filters`;
+    return `SELECT date_trunc('month', created_date) AS month,\n       COUNT(*) AS total\nFROM silver.${table.toLowerCase()}\nGROUP BY 1`;
+  };
+
+  // ── SQL configured badge helper ───────────────────────────────────────────
+  const tableHasSql = (t) =>
+    ["bronze", "silver", "gold"].some(l => sqlConfig[t]?.[l]?.trim());
+
+  const sqlConfiguredCount = Object.keys(sqlConfig).filter(tableHasSql).length;
+
+  // ── Toggle error expansion ────────────────────────────────────────────────
+  const toggleError = (i) => setExpandedErrors(prev => {
+    const n = new Set(prev);
+    n.has(i) ? n.delete(i) : n.add(i);
+    return n;
+  });
+
+  // ── Active code tab value (custom override > fetched preview) ─────────────
+  const activeCode = customCode[activeCodeTab] ?? codePreview[activeCodeTab] ?? "";
+  const isCustomised = !!customCode[activeCodeTab]?.trim();
+
+  // ── Layer badge color helper ──────────────────────────────────────────────
+  const layerColor = { bronze: "#92400e", silver: "#1d4ed8", gold: "#854d0e", pipeline: "#5b21b6" };
+  const layerBg    = { bronze: "#fef3c7", silver: "#eff6ff", gold: "#fef9c3", pipeline: "#f5f3ff" };
+
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* ── Header ── */}
       <div>
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Deploy to Microsoft Fabric</h2>
         <p style={{ fontSize: 13, color: "var(--color-muted)", margin: 0 }}>
@@ -1759,87 +1857,338 @@ function StepDeploy({ wizard, onBack }) {
         </p>
       </div>
 
-      {/* Summary cards */}
+      {/* ── Summary cards ── */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
         {[
-          { label: "ERP Source",  value: wizard.sourceName ?? wizard.source,            icon: Server  },
-          { label: "Module",      value: wizard.moduleName ?? wizard.module,             icon: Package },
-          { label: "Tables",      value: `${wizard.discoveredTables?.length ?? 0}`,      icon: Table2  },
-          { label: "Connection",  value: wizard.connectionId ? "Created" : "Pending",    icon: PlugZap },
+          { label: "ERP Source", value: wizard.sourceName ?? wizard.source,         icon: Server  },
+          { label: "Module",     value: wizard.moduleName ?? wizard.module,          icon: Package },
+          { label: "Tables",     value: `${tables.length}`,                          icon: Table2  },
+          { label: "Connection", value: wizard.connectionId ? "Created" : "Pending", icon: PlugZap },
         ].map(({ label, value, icon: Icon }) => (
           <div key={label} className="card" style={{ padding: 14 }}>
-            <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
+            <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600,
+                          display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
               <Icon size={11} /> {label.toUpperCase()}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {value}
             </div>
           </div>
         ))}
       </div>
 
-      {/* Artifact selection */}
       {!result && (
-        <div className="card" style={{ padding: 20 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-            <FileCode size={15} style={{ color: "var(--color-primary)" }} />
-            Select Artifacts to Create in Fabric
-          </h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-            {[
-              { key: "bronze",   label: "Bronze Notebook",  icon: FileCode,  desc: "Raw ERP extraction"      },
-              { key: "silver",   label: "Silver Notebook",  icon: FileCode,  desc: "Cleanse & conform"       },
-              { key: "gold",     label: "Gold Notebook",    icon: FileCode,  desc: "KPIs & business metrics" },
-              { key: "pipeline", label: "Data Pipeline",    icon: GitBranch, desc: "Bronze→Silver→Gold flow"  },
-            ].map(({ key, label, icon: Icon, desc }) => (
-              <label
-                key={key}
-                style={{
+        <>
+          {/* ── Artifact selection + notebook type toggle ── */}
+          <div className="card" style={{ padding: 20 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 14,
+                         display: "flex", alignItems: "center", gap: 8 }}>
+              <FileCode size={15} style={{ color: "var(--color-primary)" }} />
+              Select Artifacts &amp; Notebook Type
+            </h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
+              {[
+                { key: "bronze",   label: "Bronze Notebook", icon: FileCode,  desc: "Raw ERP extraction"      },
+                { key: "silver",   label: "Silver Notebook", icon: FileCode,  desc: "Cleanse & conform"       },
+                { key: "gold",     label: "Gold Notebook",   icon: FileCode,  desc: "KPIs & business metrics" },
+                { key: "pipeline", label: "Data Pipeline",   icon: GitBranch, desc: "Bronze→Silver→Gold flow"  },
+              ].map(({ key, label, icon: Icon, desc }) => (
+                <label key={key} style={{
                   display: "flex", flexDirection: "column", gap: 8,
                   padding: "14px 16px", borderRadius: 10, cursor: "pointer",
                   border: `2px solid ${opts[key] ? "var(--color-primary)" : "#e2e8f0"}`,
                   background: opts[key] ? "var(--color-primary-light)" : "white",
                   transition: "all 0.12s",
-                }}
-              >
-                <input
-                  type="checkbox" style={{ display: "none" }}
-                  checked={opts[key]}
-                  onChange={e => setOpts(o => ({ ...o, [key]: e.target.checked }))}
-                />
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Icon size={15} style={{ color: opts[key] ? "var(--color-primary)" : "#94a3b8" }} />
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
-                  {opts[key] && <CheckCircle2 size={12} style={{ color: "var(--color-primary)", marginLeft: "auto" }} />}
-                </div>
-                <span style={{ fontSize: 11, color: "#64748b" }}>{desc}</span>
-              </label>
-            ))}
+                }}>
+                  <input type="checkbox" style={{ display: "none" }}
+                    checked={opts[key]}
+                    onChange={e => setOpts(o => ({ ...o, [key]: e.target.checked }))} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Icon size={15} style={{ color: opts[key] ? "var(--color-primary)" : "#94a3b8" }} />
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+                    {opts[key] && <CheckCircle2 size={12} style={{ color: "var(--color-primary)", marginLeft: "auto" }} />}
+                  </div>
+                  <span style={{ fontSize: 11, color: "#64748b" }}>{desc}</span>
+                  {/* Kernel type toggle — notebooks only */}
+                  {key !== "pipeline" && opts[key] && (
+                    <div style={{ display: "flex", gap: 4, marginTop: 2 }}
+                         onClick={e => e.preventDefault()}>
+                      {[
+                        { val: "pyspark", lbl: "PySpark",  ico: Terminal },
+                        { val: "sql",     lbl: "SparkSQL", ico: Code     },
+                      ].map(({ val, lbl, ico: KIcon }) => (
+                        <button key={val}
+                          onClick={e => { e.preventDefault(); setNotebookTypes(p => ({ ...p, [key]: val })); }}
+                          style={{
+                            flex: 1, padding: "4px 0", fontSize: 10, fontWeight: 600,
+                            borderRadius: 6, cursor: "pointer", border: "1px solid",
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                            background:   notebookTypes[key] === val ? "#1e40af" : "white",
+                            color:        notebookTypes[key] === val ? "white"   : "#64748b",
+                            borderColor:  notebookTypes[key] === val ? "#1e40af" : "#cbd5e1",
+                          }}>
+                          <KIcon size={9} /> {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </label>
+              ))}
+            </div>
           </div>
-        </div>
+
+          {/* ── Custom SQL per table ── */}
+          {tables.length > 0 && (
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0,
+                             display: "flex", alignItems: "center", gap: 8 }}>
+                  <Code size={15} style={{ color: "#7c3aed" }} />
+                  Custom SQL Configuration
+                  <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional)</span>
+                </h3>
+                {sqlConfiguredCount > 0 && (
+                  <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20,
+                                 background: "#f0fdf4", color: "#15803d",
+                                 border: "1px solid #bbf7d0", fontWeight: 600 }}>
+                    {sqlConfiguredCount} table{sqlConfiguredCount !== 1 ? "s" : ""} configured
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {tables.map(t => (
+                  <div key={t} style={{
+                    border: "1px solid",
+                    borderColor: tableHasSql(t) ? "#a5b4fc" : "#e2e8f0",
+                    borderRadius: 8, overflow: "hidden",
+                    background: tableHasSql(t) ? "#fafafe" : "white",
+                  }}>
+                    {/* Table row header */}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "10px 14px", cursor: "pointer",
+                    }} onClick={() => setSqlExpandedTable(sqlExpandedTable === t ? null : t)}>
+                      <Table2 size={13} style={{ color: "#64748b", flexShrink: 0 }} />
+                      <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
+                      {tableHasSql(t) && (
+                        <span style={{
+                          fontSize: 10, padding: "2px 8px", borderRadius: 20,
+                          background: "#eff6ff", color: "#1d4ed8",
+                          border: "1px solid #bfdbfe", fontWeight: 600,
+                          display: "flex", alignItems: "center", gap: 4,
+                        }}>
+                          <Code size={9} /> SQL configured
+                        </span>
+                      )}
+                      {sqlExpandedTable === t
+                        ? <ChevronUp   size={14} style={{ color: "#94a3b8" }} />
+                        : <ChevronDown size={14} style={{ color: "#94a3b8" }} />}
+                    </div>
+
+                    {/* Expanded SQL editor */}
+                    {sqlExpandedTable === t && (
+                      <div style={{ borderTop: "1px solid #e2e8f0", padding: 14 }}>
+                        {/* Layer tabs */}
+                        <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+                          {["bronze", "silver", "gold"].map(layer => {
+                            const hasVal = sqlConfig[t]?.[layer]?.trim();
+                            return (
+                              <button key={layer}
+                                onClick={() => setSqlActiveLayer(layer)}
+                                style={{
+                                  padding: "4px 12px", fontSize: 11, fontWeight: 600,
+                                  borderRadius: 6, cursor: "pointer", border: "1px solid",
+                                  display: "flex", alignItems: "center", gap: 4,
+                                  background:  sqlActiveLayer === layer ? layerBg[layer]    : "white",
+                                  color:       sqlActiveLayer === layer ? layerColor[layer] : "#64748b",
+                                  borderColor: sqlActiveLayer === layer ? layerColor[layer] : "#e2e8f0",
+                                }}>
+                                {layer.charAt(0).toUpperCase() + layer.slice(1)}
+                                {hasVal && <span style={{ width: 6, height: 6, borderRadius: "50%",
+                                                          background: layerColor[layer], display: "inline-block" }} />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <textarea
+                          placeholder={sqlPlaceholder(t, sqlActiveLayer)}
+                          value={sqlConfig[t]?.[sqlActiveLayer] ?? ""}
+                          onChange={e => setSqlConfig(prev => ({
+                            ...prev,
+                            [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: e.target.value },
+                          }))}
+                          style={{
+                            width: "100%", height: 100, fontFamily: "monospace",
+                            fontSize: 12, padding: 10, borderRadius: 6,
+                            border: "1px solid #cbd5e1", resize: "vertical",
+                            color: "#1e293b", background: "#f8fafc",
+                          }}
+                        />
+                        <div style={{ display: "flex", justifyContent: "space-between",
+                                      alignItems: "center", marginTop: 6 }}>
+                          <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                            {sqlActiveLayer === "bronze"
+                              ? "Override JDBC query for Bronze extraction"
+                              : sqlActiveLayer === "silver"
+                              ? "Custom transform SQL reading from bronze layer"
+                              : "Aggregation / KPI SQL reading from silver layer"}
+                          </span>
+                          {sqlConfig[t]?.[sqlActiveLayer]?.trim() && (
+                            <button
+                              onClick={() => setSqlConfig(prev => ({
+                                ...prev, [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: "" },
+                              }))}
+                              style={{ fontSize: 11, color: "#b91c1c", background: "none",
+                                       border: "none", cursor: "pointer", padding: 0 }}>
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Preview & Customize Code ── */}
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: showPreview ? 16 : 0 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0,
+                           display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                <FileCode size={15} style={{ color: "#0891b2" }} />
+                Preview &amp; Customize Code
+                <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>
+                  (auto-populated · editable before deploy)
+                </span>
+              </h3>
+              <button
+                onClick={fetchPreview}
+                disabled={previewLoading}
+                style={{
+                  padding: "7px 16px", fontSize: 12, fontWeight: 600,
+                  borderRadius: 8, cursor: "pointer", border: "1px solid #0891b2",
+                  background: previewLoading ? "#f0f9ff" : "#0891b2",
+                  color: previewLoading ? "#0891b2" : "white",
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                {previewLoading
+                  ? <><RefreshCw size={12} className="spin" /> Generating…</>
+                  : <><Eye size={12} /> {showPreview ? "Regenerate" : "Generate Preview"}</>}
+              </button>
+              {showPreview && (
+                <button
+                  onClick={() => setShowPreview(false)}
+                  style={{ background: "none", border: "none", cursor: "pointer",
+                           fontSize: 12, color: "#64748b", padding: "4px 8px" }}>
+                  Hide
+                </button>
+              )}
+            </div>
+
+            {showPreview && (
+              <>
+                {/* Layer tabs */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  {["bronze", "silver", "gold", "pipeline"].filter(k => codePreview[k]).map(k => (
+                    <button key={k}
+                      onClick={() => setActiveCodeTab(k)}
+                      style={{
+                        padding: "5px 14px", fontSize: 11, fontWeight: 700,
+                        borderRadius: 7, cursor: "pointer", border: "1px solid",
+                        display: "flex", alignItems: "center", gap: 5,
+                        background:  activeCodeTab === k ? layerBg[k]    : "white",
+                        color:       activeCodeTab === k ? layerColor[k] : "#64748b",
+                        borderColor: activeCodeTab === k ? layerColor[k] : "#e2e8f0",
+                      }}>
+                      {k.charAt(0).toUpperCase() + k.slice(1)}
+                      {customCode[k]?.trim() && (
+                        <span style={{ width: 6, height: 6, borderRadius: "50%",
+                                       background: layerColor[k], display: "inline-block" }} />
+                      )}
+                      {k !== "pipeline" && (
+                        <span style={{ fontSize: 9, opacity: 0.8 }}>
+                          {notebookTypes[k] === "sql" ? "SparkSQL" : "PySpark"}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Code editor toolbar */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  {isCustomised && (
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20,
+                                   background: "#fef3c7", color: "#92400e",
+                                   border: "1px solid #fde68a", fontWeight: 600 }}>
+                      ✏ Modified
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <button
+                    onClick={() => navigator.clipboard.writeText(activeCode).then(() => toast.success("Copied!"))}
+                    style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6,
+                             cursor: "pointer", border: "1px solid #e2e8f0",
+                             background: "white", color: "#64748b",
+                             display: "flex", alignItems: "center", gap: 4 }}>
+                    <Copy size={11} /> Copy
+                  </button>
+                  {isCustomised && (
+                    <button
+                      onClick={() => setCustomCode(prev => ({ ...prev, [activeCodeTab]: "" }))}
+                      style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6,
+                               cursor: "pointer", border: "1px solid #fecaca",
+                               background: "#fef2f2", color: "#b91c1c" }}>
+                      Reset to auto-generated
+                    </button>
+                  )}
+                </div>
+
+                <textarea
+                  value={activeCode}
+                  onChange={e => setCustomCode(prev => ({ ...prev, [activeCodeTab]: e.target.value }))}
+                  spellCheck={false}
+                  style={{
+                    width: "100%", height: 380, fontFamily: "'Fira Code', 'Courier New', monospace",
+                    fontSize: 12, padding: 14, borderRadius: 8, resize: "vertical",
+                    border: "1px solid", lineHeight: 1.6,
+                    borderColor: isCustomised ? "#fde68a" : "#cbd5e1",
+                    background:  isCustomised ? "#fffbeb" : "#0f172a",
+                    color:       isCustomised ? "#1e293b"  : "#e2e8f0",
+                    outline: "none",
+                  }}
+                />
+                <p style={{ fontSize: 11, color: "#94a3b8", margin: "6px 0 0" }}>
+                  Edit the code above before deploying. Changes apply only to this deployment.
+                  {" "}Separator between cells: <code style={{ fontSize: 10 }}># ─── Next Cell ───</code>
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* ── Deploy button ── */}
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <button className="btn-ghost" onClick={onBack}><ChevronLeft size={15} /> Back</button>
+            <button
+              className="btn-primary"
+              disabled={deployMutation.isPending || !Object.values(opts).some(Boolean)}
+              onClick={() => deployMutation.mutate()}
+              style={{ fontSize: 14, padding: "10px 24px" }}
+            >
+              {deployMutation.isPending
+                ? <><RefreshCw size={14} className="spin" /> Deploying to Fabric…</>
+                : <><Play size={14} /> Deploy to Microsoft Fabric</>}
+            </button>
+          </div>
+        </>
       )}
 
-      {/* Deploy button */}
-      {!result && (
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <button className="btn-ghost" onClick={onBack}><ChevronLeft size={15} /> Back</button>
-          <button
-            className="btn-primary"
-            disabled={deployMutation.isPending || !Object.values(opts).some(Boolean)}
-            onClick={() => deployMutation.mutate()}
-            style={{ fontSize: 14, padding: "10px 24px" }}
-          >
-            {deployMutation.isPending
-              ? <><RefreshCw size={14} className="spin" /> Deploying to Fabric…</>
-              : <><Play size={14} /> Deploy to Microsoft Fabric</>
-            }
-          </button>
-        </div>
-      )}
-
-      {/* Deployment results */}
+      {/* ── Deployment results ── */}
       {result && (
         <div style={{ border: "1px solid var(--color-border)", borderRadius: 12, overflow: "hidden" }}>
+          {/* Result header */}
           <div style={{
             padding: "14px 20px", display: "flex", alignItems: "center", gap: 10,
             background: result.live ? "#f0fdf4" : "#fffbeb",
@@ -1847,8 +2196,7 @@ function StepDeploy({ wizard, onBack }) {
           }}>
             {result.live
               ? <CheckCircle2 size={18} style={{ color: "#16a34a" }} />
-              : <AlertTriangle size={18} style={{ color: "#d97706" }} />
-            }
+              : <AlertTriangle size={18} style={{ color: "#d97706" }} />}
             <div>
               <div style={{ fontWeight: 700, fontSize: 14, color: result.live ? "#15803d" : "#92400e" }}>
                 {result.live ? "Deployed successfully to Microsoft Fabric" : "Simulated deployment completed"}
@@ -1857,62 +2205,111 @@ function StepDeploy({ wizard, onBack }) {
                 <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{result.note}</div>
               )}
             </div>
-            <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
-                           padding: "3px 10px", borderRadius: 20,
-                           background: result.live ? "#dcfce7" : "#fef9c3",
-                           color: result.live ? "#15803d" : "#92400e" }}>
+            <span style={{
+              marginLeft: "auto", fontSize: 12, fontWeight: 600,
+              padding: "3px 10px", borderRadius: 20,
+              background: result.live ? "#dcfce7" : "#fef9c3",
+              color:      result.live ? "#15803d" : "#92400e",
+            }}>
               {result.total} artifact{result.total !== 1 ? "s" : ""}
             </span>
           </div>
 
+          {/* Artifacts table */}
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#f8fafc", borderBottom: "1px solid #f1f5f9" }}>
-                {["Artifact Name", "Type", "Artifact ID", "Status / Error"].map(h => (
-                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11,
-                                       fontWeight: 600, color: "#64748b" }}>{h}</th>
+                {["Artifact Name", "Type", "Artifact ID", "Status"].map(h => (
+                  <th key={h} style={{ padding: "10px 16px", textAlign: "left",
+                                       fontSize: 11, fontWeight: 600, color: "#64748b" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {artifacts.map((a, i) => (
-                <tr key={i} style={{ borderBottom: "1px solid #f1f5f9",
-                                     background: a.status === "failed" ? "#fff8f8" : "transparent" }}>
-                  <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: 12, fontWeight: 600 }}>{a.name}</td>
-                  <td style={{ padding: "10px 16px", fontSize: 12, color: "#64748b" }}>{a.type}</td>
-                  <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>
-                    {a.id?.slice(0, 16)}…
-                  </td>
-                  <td style={{ padding: "10px 16px" }}>
-                    <span className={
-                      a.status === "created"   ? "badge badge-green" :
-                      a.status === "simulated" ? "badge badge-amber" :
-                                                 "badge badge-red"
-                    } style={{ fontSize: 10 }}>
-                      {a.status}
-                      {a.http_status ? ` (HTTP ${a.http_status})` : ""}
-                    </span>
-                    {a.error && (
-                      <div title={a.error} style={{
-                        marginTop: 4, fontSize: 10, color: "#b91c1c",
-                        fontFamily: "monospace", maxWidth: 320,
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        background: "#fef2f2", padding: "2px 6px", borderRadius: 4,
-                        border: "1px solid #fecaca", cursor: "help",
-                      }}>
-                        ⚠ {a.error.length > 100 ? a.error.slice(0, 100) + "…" : a.error}
+                <>
+                  <tr key={`row-${i}`} style={{
+                    borderBottom: expandedErrors.has(i) ? "none" : "1px solid #f1f5f9",
+                    background: a.status === "failed" ? "#fff8f8" :
+                                a.status === "pending" ? "#fffbeb" : "transparent",
+                  }}>
+                    <td style={{ padding: "10px 16px", fontFamily: "monospace",
+                                 fontSize: 12, fontWeight: 600 }}>{a.name}</td>
+                    <td style={{ padding: "10px 16px", fontSize: 12, color: "#64748b" }}>{a.type}</td>
+                    <td style={{ padding: "10px 16px", fontFamily: "monospace",
+                                 fontSize: 11, color: "#94a3b8" }}>
+                      {a.id ? a.id.slice(0, 16) + "…" : "—"}
+                    </td>
+                    <td style={{ padding: "10px 16px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span className={
+                          a.status === "created"   ? "badge badge-green" :
+                          a.status === "pending"   ? "badge badge-amber" :
+                          a.status === "simulated" ? "badge badge-amber" :
+                                                     "badge badge-red"
+                        } style={{ fontSize: 10 }}>
+                          {a.status}{a.http_status ? ` · HTTP ${a.http_status}` : ""}
+                        </span>
+                        {a.error && (
+                          <>
+                            <button
+                              onClick={() => toggleError(i)}
+                              style={{
+                                fontSize: 10, padding: "2px 8px", borderRadius: 6,
+                                cursor: "pointer", border: "1px solid #fecaca",
+                                background: "#fef2f2", color: "#b91c1c",
+                                display: "flex", alignItems: "center", gap: 3,
+                              }}>
+                              {expandedErrors.has(i)
+                                ? <><ChevronUp size={10} /> Hide error</>
+                                : <><AlertTriangle size={10} /> Details</>}
+                            </button>
+                            <button
+                              title="Copy error to clipboard"
+                              onClick={() => navigator.clipboard.writeText(a.error).then(() => toast.success("Error copied"))}
+                              style={{
+                                fontSize: 10, padding: "2px 7px", borderRadius: 6,
+                                cursor: "pointer", border: "1px solid #e2e8f0",
+                                background: "white", color: "#64748b",
+                                display: "flex", alignItems: "center", gap: 3,
+                              }}>
+                              <Copy size={10} /> Copy
+                            </button>
+                          </>
+                        )}
                       </div>
-                    )}
-                  </td>
-                </tr>
+                    </td>
+                  </tr>
+                  {a.error && expandedErrors.has(i) && (
+                    <tr key={`err-${i}`}>
+                      <td colSpan={4} style={{
+                        padding: "8px 16px 12px", background: "#fef2f2",
+                        borderBottom: "1px solid #fecaca",
+                      }}>
+                        <pre style={{
+                          margin: 0, fontSize: 11, color: "#b91c1c",
+                          fontFamily: "monospace", whiteSpace: "pre-wrap",
+                          wordBreak: "break-all", lineHeight: 1.5,
+                          background: "#fff1f2", padding: 10, borderRadius: 6,
+                          border: "1px solid #fecaca",
+                        }}>
+                          {a.error}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
             </tbody>
           </table>
 
-          <div style={{ padding: "12px 20px", background: "#f8fafc",
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        borderTop: "1px solid #f1f5f9", fontSize: 12, color: "#64748b",
-                        flexWrap: "wrap", gap: 8 }}>
+          {/* Footer actions */}
+          <div style={{
+            padding: "12px 20px", background: "#f8fafc",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            borderTop: "1px solid #f1f5f9", fontSize: 12, color: "#64748b",
+            flexWrap: "wrap", gap: 8,
+          }}>
             <span>Workspace: {result.workspace_id || "local-dev"}</span>
             <div style={{ display: "flex", gap: 8 }}>
               {result.live && (
@@ -1928,17 +2325,18 @@ function StepDeploy({ wizard, onBack }) {
                 </button>
               )}
               <button className="btn-ghost" style={{ fontSize: 12 }}
-                      onClick={() => {
-                        setResult(null);
-                        setVerifyItems(null);
-                        setOpts({ bronze: true, silver: true, gold: true, pipeline: true });
-                      }}>
+                onClick={() => {
+                  setResult(null);
+                  setVerifyItems(null);
+                  setOpts({ bronze: true, silver: true, gold: true, pipeline: true });
+                  setExpandedErrors(new Set());
+                }}>
                 Deploy Again
               </button>
             </div>
           </div>
 
-          {/* Artifact verification result */}
+          {/* ── Artifact verification panel ── */}
           {verifyItems && (
             <div style={{ borderTop: "1px solid #f1f5f9" }}>
               {verifyItems.error ? (
@@ -1967,19 +2365,16 @@ function StepDeploy({ wizard, onBack }) {
                           border: `1px solid ${confirmed ? "#bbf7d0" : "#fde68a"}`,
                           display: "flex", alignItems: "center", gap: 5,
                         }}>
-                          {confirmed
-                            ? <CheckCircle2 size={11} />
-                            : <AlertTriangle size={11} />}
+                          {confirmed ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />}
                           {art.name}
                         </span>
                       );
                     })}
                   </div>
-                  {verifyItems.total > verifyItems.matched?.length && (
+                  {verifyItems.total > (verifyItems.matched?.length ?? 0) && (
                     <p style={{ fontSize: 11, color: "#64748b", marginTop: 8, marginBottom: 0 }}>
-                      {verifyItems.total} total items in workspace ·
-                      {" "}{verifyItems.total - (verifyItems.matched?.length ?? 0)} item(s)
-                      not from this deployment
+                      {verifyItems.total} total items in workspace ·{" "}
+                      {verifyItems.total - (verifyItems.matched?.length ?? 0)} item(s) not from this deployment
                     </p>
                   )}
                 </div>

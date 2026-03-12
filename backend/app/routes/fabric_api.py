@@ -387,26 +387,67 @@ async def _fabric_post(token: str, url: str, payload: dict) -> dict:
 
 
 # ── Notebook / pipeline cell helpers ──────────────────────────────────────────
-def _make_notebook_b64(name: str, cells: list[str]) -> str:
+# Fabric kernel specs by type
+_KERNEL_SPECS: dict[str, dict] = {
+    "pyspark": {
+        "kernelspec":  {"display_name": "PySpark", "language": "python", "name": "synapse_pyspark"},
+        "language_info": {"name": "python", "version": "3.11.0"},
+        "cell_type":   "code",
+    },
+    "sql": {
+        "kernelspec":  {"display_name": "SparkSQL", "language": "sparksql", "name": "synapse_spark"},
+        "language_info": {"name": "sparksql"},
+        "cell_type":   "code",
+    },
+}
+
+# Separator used when joining/splitting cells for preview editing
+_CELL_SEP = "\n\n# ─── Next Cell ───\n\n"
+
+
+def _make_notebook_b64(name: str, cells: list[str], kernel: str = "pyspark") -> str:
+    """
+    Build a valid Jupyter nbformat v4 notebook and return it as a base64 string.
+    Fabric requires cell `source` to be a list of strings (one per line, each
+    ending with \\n except the last), not a single multi-line string.
+
+    kernel: "pyspark" (default) or "sql"
+    """
+    spec = _KERNEL_SPECS.get(kernel, _KERNEL_SPECS["pyspark"])
     nb = {
         "nbformat": 4, "nbformat_minor": 5,
         "metadata": {
-            "kernelspec": {"display_name": "PySpark", "language": "python",
-                           "name": "synapse_pyspark"},
-            "language_info": {"name": "python", "version": "3.11.0"},
+            "kernelspec":    spec["kernelspec"],
+            "language_info": spec["language_info"],
         },
         "cells": [
-            {"cell_type": "code", "execution_count": None,
-             "metadata": {}, "outputs": [], "source": c}
+            {
+                "cell_type": spec["cell_type"], "execution_count": None,
+                "metadata": {}, "outputs": [],
+                # Fabric nbformat parser expects source as list-of-lines
+                "source": c.splitlines(keepends=True) if isinstance(c, str) else c,
+            }
             for c in cells
         ],
     }
     return base64.b64encode(json.dumps(nb).encode()).decode()
 
 
-def _bronze_cells(source: str, module: str, tables: list[str]) -> list[str]:
+def _code_to_cells(code: str) -> list[str]:
+    """Split user-edited code (from frontend) back into individual cells."""
+    return [c.strip() for c in code.split(_CELL_SEP.strip()) if c.strip()]
+
+
+def _bronze_cells(
+    source: str, module: str, tables: list[str],
+    custom_sql: dict[str, str] | None = None,
+) -> list[str]:
     """
     Generate PySpark cells for the Bronze notebook.
+
+    custom_sql: optional dict of {table_name: SQL_query}.
+      When provided for a table, the SQL is used as a JDBC subquery
+      instead of reading the whole table: dbtable='(SELECT ...) t_alias'.
 
     Credentials resolution order (Fabric-compatible):
       1. notebookutils Key Vault  — production (uncomment KV section)
@@ -414,6 +455,21 @@ def _bronze_cells(source: str, module: str, tables: list[str]) -> list[str]:
       3. os.environ               — Docker env_file / VM environment
       4. Hardcoded placeholders   — fallback (replace before running)
     """
+    if custom_sql is None:
+        custom_sql = {}
+
+    def _table_cell(t: str) -> str:
+        sql = custom_sql.get(t)
+        dbtable = f"({sql}) t_{t.lower()}" if sql else t
+        note    = f"  # custom SQL override\n" if sql else "\n"
+        return (
+            f"# Extract {t}{note}"
+            f"df_{t.lower()} = spark.read.format('jdbc').options(**OPTS, dbtable='{dbtable}').load()\n"
+            f"df_{t.lower()}.write.format('delta').mode('overwrite')"
+            f".option('overwriteSchema','true').saveAsTable('bronze.{t.lower()}')\n"
+            f"print(f'bronze.{t.lower()} written \u2014 {{df_{t.lower()}.count()}} rows')"
+        )
+
     return [
         # ── Cell 0: setup & credentials ─────────────────────────────────────
         f"# Bronze Layer — {source} {module} raw extraction\n"
@@ -443,40 +499,116 @@ def _bronze_cells(source: str, module: str, tables: list[str]) -> list[str]:
         "}\n"
         "print(f'Bronze: Connecting to {ORACLE_HOST}:{ORACLE_PORT}/{ORACLE_SVC}')",
     ] + [
-        # ── Cell N: one cell per table ───────────────────────────────────────
-        f"# Extract {t}\n"
-        f"df_{t.lower()} = spark.read.format('jdbc').options(**OPTS, dbtable='{t}').load()\n"
-        f"df_{t.lower()}.write.format('delta').mode('overwrite')"
-        f".option('overwriteSchema','true').saveAsTable('bronze.{t.lower()}')\n"
-        f"print(f'bronze.{t.lower()} written — {{df_{t.lower()}.count()}} rows')"
-        for t in (tables or ["HEADER_TABLE", "LINE_TABLE"])
+        _table_cell(t) for t in (tables or ["HEADER_TABLE", "LINE_TABLE"])
     ]
 
 
-def _silver_cells(source: str, module: str) -> list[str]:
-    return [
+def _silver_cells(
+    source: str, module: str,
+    tables: list[str] | None = None,
+    silver_sql: dict[str, str] | None = None,
+) -> list[str]:
+    """
+    Generate PySpark cells for the Silver notebook.
+
+    silver_sql: optional dict of {table_name: SQL_query}.
+      When provided, emits spark.sql(query) instead of the default
+      dropDuplicates/na.fill cleansing loop for that table.
+    """
+    if silver_sql is None:
+        silver_sql = {}
+
+    cells = [
         f"# Silver Layer — {source} {module} cleanse & conform\n"
         "from pyspark.sql import SparkSession, functions as F\n"
-        "spark = SparkSession.builder.appName('Silver_Transform').getOrCreate()\n\n"
-        "bronze_tables = spark.catalog.listTables('bronze')\n"
-        "for t in bronze_tables:\n"
-        "    df = spark.read.table(f'bronze.{t.name}')\n"
-        "    df_clean = df.dropDuplicates().na.fill('')\n"
-        "    df_clean.write.format('delta').mode('overwrite')"
-        ".option('overwriteSchema','true').saveAsTable(f'silver.{t.name}')\n"
-        "    print(f'silver.{t.name} written')"
+        "spark = SparkSession.builder.appName('Silver_Transform').getOrCreate()\n",
     ]
 
+    if tables:
+        for t in tables:
+            sql = silver_sql.get(t)
+            if sql:
+                cells.append(
+                    f"# Silver transform — {t} (custom SQL)\n"
+                    f"df_{t.lower()} = spark.sql(\"\"\"\n{sql}\n\"\"\")\n"
+                    f"df_{t.lower()}.write.format('delta').mode('overwrite')"
+                    f".option('overwriteSchema','true').saveAsTable('silver.{t.lower()}')\n"
+                    f"print('silver.{t.lower()} written')"
+                )
+            else:
+                cells.append(
+                    f"# Silver cleanse — {t} (default: dedupe + fill nulls)\n"
+                    f"df_{t.lower()} = spark.read.table('bronze.{t.lower()}')\n"
+                    f"df_{t.lower()}_clean = df_{t.lower()}.dropDuplicates().na.fill('')\n"
+                    f"df_{t.lower()}_clean.write.format('delta').mode('overwrite')"
+                    f".option('overwriteSchema','true').saveAsTable('silver.{t.lower()}')\n"
+                    f"print('silver.{t.lower()} written')"
+                )
+    else:
+        # Fallback: iterate all bronze tables dynamically
+        cells.append(
+            "bronze_tables = spark.catalog.listTables('bronze')\n"
+            "for t in bronze_tables:\n"
+            "    df = spark.read.table(f'bronze.{t.name}')\n"
+            "    df_clean = df.dropDuplicates().na.fill('')\n"
+            "    df_clean.write.format('delta').mode('overwrite')"
+            ".option('overwriteSchema','true').saveAsTable(f'silver.{t.name}')\n"
+            "    print(f'silver.{t.name} written')"
+        )
 
-def _gold_cells(source: str, module: str) -> list[str]:
-    return [
+    return cells
+
+
+def _gold_cells(
+    source: str, module: str,
+    tables: list[str] | None = None,
+    gold_sql: dict[str, str] | None = None,
+) -> list[str]:
+    """
+    Generate PySpark cells for the Gold notebook.
+
+    gold_sql: optional dict of {table_name: SQL_query}.
+      When provided, emits a spark.sql(query) aggregation cell writing
+      the result to gold.<table>. Otherwise emits a TODO stub cell.
+    """
+    if gold_sql is None:
+        gold_sql = {}
+
+    cells = [
         f"# Gold Layer — {source} {module} business KPIs\n"
         "from pyspark.sql import SparkSession, functions as F\n"
-        "spark = SparkSession.builder.appName('Gold_Aggregation').getOrCreate()\n\n"
-        f"# Build {module} summary metrics\n"
-        f"# TODO: Add aggregations specific to {module} business requirements\n"
-        "print('Gold layer transformation complete')"
+        "spark = SparkSession.builder.appName('Gold_Aggregation').getOrCreate()\n",
     ]
+
+    custom_tables = [t for t in (tables or []) if t in gold_sql]
+    stub_tables   = [t for t in (tables or []) if t not in gold_sql]
+
+    for t in custom_tables:
+        cells.append(
+            f"# Gold KPI — {t} (custom SQL)\n"
+            f"df_gold_{t.lower()} = spark.sql(\"\"\"\n{gold_sql[t]}\n\"\"\")\n"
+            f"df_gold_{t.lower()}.write.format('delta').mode('overwrite')"
+            f".option('overwriteSchema','true').saveAsTable('gold.{t.lower()}')\n"
+            f"print('gold.{t.lower()} written')"
+        )
+
+    if stub_tables or not tables:
+        table_list = stub_tables if stub_tables else ["<your_table>"]
+        cells.append(
+            f"# TODO: Add aggregations specific to {module} business requirements\n"
+            f"# Tables without custom SQL: {table_list}\n"
+            "# Example:\n"
+            "# df_kpi = spark.sql(\"\"\"\n"
+            "#   SELECT date_trunc('month', invoice_date) AS month,\n"
+            "#          SUM(amount) AS total_revenue\n"
+            "#   FROM silver.<table>\n"
+            "#   GROUP BY 1\n"
+            "# \"\"\")\n"
+            "# df_kpi.write.format('delta').mode('overwrite').saveAsTable('gold.revenue_monthly')\n"
+            "print('Gold layer transformation complete')"
+        )
+
+    return cells
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -746,6 +878,175 @@ class DeployRequest(BaseModel):
     create_silver:   bool = True
     create_gold:     bool = True
     create_pipeline: bool = True
+    # Custom SQL per table per layer (table_name → SQL string)
+    custom_sql:      dict[str, str] = {}   # Bronze: JDBC extraction queries
+    silver_sql:      dict[str, str] = {}   # Silver: transform queries
+    gold_sql:        dict[str, str] = {}   # Gold: aggregation/KPI queries
+    # Notebook kernel per layer: "pyspark" (default) or "sql"
+    notebook_types:  dict[str, str] = {}   # e.g. {"bronze": "sql", "silver": "pyspark"}
+    # User-edited notebook code per layer — overrides auto-generated cells when set
+    # Each value is cells joined by _CELL_SEP; empty = use auto-generated code
+    custom_notebook_code: dict[str, str] = {}   # bronze/silver/gold → edited code string
+    # User-edited pipeline JSON — overrides auto-generated pipeline when set
+    custom_pipeline_json: str = ""
+
+
+def _bronze_sql_cells(source: str, module: str, tables: list[str],
+                      custom_sql: dict[str, str] | None = None) -> list[str]:
+    """
+    Generate SparkSQL cells for the Bronze notebook (SQL kernel variant).
+    Uses %sql magic cells — reads from JDBC via CREATE TABLE AS SELECT.
+    """
+    if custom_sql is None:
+        custom_sql = {}
+    setup = (
+        f"-- Bronze Layer — {source} {module} raw extraction (SparkSQL)\n"
+        "-- Microsoft Fabric Notebook — SparkSQL\n"
+        "-- NOTE: Configure your JDBC connection credentials via Spark config before running.\n"
+        f"-- Tables: {', '.join(tables or ['HEADER_TABLE', 'LINE_TABLE'])}"
+    )
+    cells = [setup]
+    for t in (tables or ["HEADER_TABLE", "LINE_TABLE"]):
+        sql = custom_sql.get(t, f"SELECT * FROM {t}")
+        cells.append(
+            f"-- Extract {t} via JDBC\n"
+            f"CREATE OR REPLACE TABLE bronze.{t.lower()} USING delta AS\n"
+            f"{sql};"
+        )
+    return cells
+
+
+def _silver_sql_cells(source: str, module: str, tables: list[str] | None = None,
+                      silver_sql: dict[str, str] | None = None) -> list[str]:
+    """Generate SparkSQL cells for the Silver notebook (SQL kernel variant)."""
+    if silver_sql is None:
+        silver_sql = {}
+    cells = [f"-- Silver Layer — {source} {module} cleanse & conform (SparkSQL)"]
+    for t in (tables or []):
+        sql = silver_sql.get(t,
+            f"SELECT DISTINCT *\nFROM bronze.{t.lower()}\nWHERE 1=1 -- add filters here")
+        cells.append(
+            f"-- Silver cleanse — {t}\n"
+            f"CREATE OR REPLACE TABLE silver.{t.lower()} USING delta AS\n"
+            f"{sql};"
+        )
+    if not tables:
+        cells.append(
+            "-- TODO: Add silver transform queries\n"
+            "-- Example:\n"
+            "-- CREATE OR REPLACE TABLE silver.my_table USING delta AS\n"
+            "-- SELECT DISTINCT * FROM bronze.my_table WHERE 1=1;"
+        )
+    return cells
+
+
+def _gold_sql_cells(source: str, module: str, tables: list[str] | None = None,
+                    gold_sql: dict[str, str] | None = None) -> list[str]:
+    """Generate SparkSQL cells for the Gold notebook (SQL kernel variant)."""
+    if gold_sql is None:
+        gold_sql = {}
+    cells = [f"-- Gold Layer — {source} {module} business KPIs (SparkSQL)"]
+    for t in (tables or []):
+        if t in gold_sql:
+            cells.append(
+                f"-- Gold KPI — {t} (custom SQL)\n"
+                f"CREATE OR REPLACE TABLE gold.{t.lower()} USING delta AS\n"
+                f"{gold_sql[t]};"
+            )
+    stub_tables = [t for t in (tables or []) if t not in (gold_sql or {})]
+    if stub_tables or not tables:
+        cells.append(
+            f"-- TODO: Add Gold aggregation queries for {module}\n"
+            "-- Example:\n"
+            "-- CREATE OR REPLACE TABLE gold.revenue_monthly USING delta AS\n"
+            "-- SELECT date_trunc('month', invoice_date) AS month,\n"
+            "--        SUM(amount) AS total_revenue\n"
+            f"-- FROM silver.{(stub_tables or ['<table>'])[0].lower()}\n"
+            "-- GROUP BY 1;"
+        )
+    return cells
+
+
+class PreviewNotebooksRequest(BaseModel):
+    source_type:    str
+    module:         str
+    selected_tables: list[str] = []
+    create_bronze:  bool = True
+    create_silver:  bool = True
+    create_gold:    bool = True
+    create_pipeline: bool = True
+    custom_sql:     dict[str, str] = {}
+    silver_sql:     dict[str, str] = {}
+    gold_sql:       dict[str, str] = {}
+    notebook_types: dict[str, str] = {}   # bronze/silver/gold → "pyspark" or "sql"
+
+
+@router.post("/preview-notebooks")
+async def preview_notebooks(req: PreviewNotebooksRequest):
+    """
+    Return auto-generated notebook code strings (not base64) for frontend preview.
+    Cells are joined by _CELL_SEP so the frontend can display and edit them.
+    Also returns the pipeline JSON template.
+    """
+    tables = req.selected_tables or ["HEADER_TABLE", "LINE_TABLE", "TABLE_C"]
+    result: dict[str, str] = {}
+
+    def _get_cells(layer: str) -> list[str]:
+        kernel = req.notebook_types.get(layer.lower(), "pyspark")
+        if layer == "Bronze":
+            if kernel == "sql":
+                return _bronze_sql_cells(req.source_type, req.module, tables, req.custom_sql)
+            return _bronze_cells(req.source_type, req.module, tables, req.custom_sql)
+        if layer == "Silver":
+            if kernel == "sql":
+                return _silver_sql_cells(req.source_type, req.module, tables, req.silver_sql)
+            return _silver_cells(req.source_type, req.module, tables, req.silver_sql)
+        if layer == "Gold":
+            if kernel == "sql":
+                return _gold_sql_cells(req.source_type, req.module, tables, req.gold_sql)
+            return _gold_cells(req.source_type, req.module, tables, req.gold_sql)
+        return []
+
+    if req.create_bronze:
+        result["bronze"] = _CELL_SEP.join(_get_cells("Bronze"))
+    if req.create_silver:
+        result["silver"] = _CELL_SEP.join(_get_cells("Silver"))
+    if req.create_gold:
+        result["gold"]   = _CELL_SEP.join(_get_cells("Gold"))
+
+    if req.create_pipeline:
+        # Return a preview of the pipeline JSON with placeholder notebook IDs
+        prefix = f"{req.source_type}_{req.module}"
+        activities, prev = [], None
+        for layer in ("Bronze", "Silver", "Gold"):
+            if not getattr(req, f"create_{layer.lower()}", False):
+                continue
+            act_name = f"Run_{layer}"
+            act = {
+                "name":      act_name,
+                "type":      "TridentNotebook",
+                "dependsOn": ([{"activity": prev,
+                                "dependencyConditions": ["Succeeded"]}] if prev else []),
+                "typeProperties": {
+                    "notebookId":  f"<{layer.lower()}-notebook-id>",
+                    "workspaceId": "<workspace-id>",
+                },
+            }
+            activities.append(act)
+            prev = act_name
+        result["pipeline"] = json.dumps(
+            {"properties": {"activities": activities}}, indent=2)
+
+    return {"layers": result, "cell_separator": _CELL_SEP.strip()}
+
+
+# Type-specific Fabric API endpoints per official MS docs
+# https://learn.microsoft.com/en-us/rest/api/fabric/notebook/items/create-notebook
+# https://learn.microsoft.com/en-us/rest/api/fabric/datapipeline/items/create-data-pipeline
+_FABRIC_ITEM_ENDPOINTS: dict[str, str] = {
+    "Notebook":     "notebooks",
+    "DataPipeline": "dataPipelines",
+}
 
 
 @router.post("/deploy")
@@ -757,6 +1058,7 @@ async def deploy(req: DeployRequest):
       3. Creates Gold KPI notebook
       4. Creates a Data Pipeline chaining Bronze → Silver → Gold
 
+    Uses type-specific Fabric API endpoints (confirmed per MS docs).
     Uses LRO polling for async 202 responses.
     Simulates when MS365 token is not set.
     """
@@ -777,11 +1079,25 @@ async def deploy(req: DeployRequest):
     async def _make(name: str, item_type: str, definition: dict) -> dict:
         if live:
             try:
-                result  = await _fabric_post(
-                    token,
-                    f"{FABRIC_API}/workspaces/{ws}/items",
-                    {"displayName": name, "type": item_type, "definition": definition},
-                )
+                # Use type-specific endpoint (notebooks / dataPipelines)
+                endpoint = _FABRIC_ITEM_ENDPOINTS.get(item_type, "items")
+                url      = f"{FABRIC_API}/workspaces/{ws}/{endpoint}"
+                # Type-specific endpoints only need displayName + definition
+                body: dict = {"displayName": name, "definition": definition}
+                if endpoint == "items":
+                    body["type"] = item_type  # generic /items needs type field
+                result = await _fabric_post(token, url, body)
+
+                # LRO may time out and return status="pending" rather than raising
+                if result.get("status") == "pending":
+                    return {
+                        "name":   name, "type": item_type,
+                        "id":     result.get("id", str(uuid.uuid4())),
+                        "status": "pending",
+                        "live":   True,
+                        "note":   result.get("note", "LRO still running — check Fabric workspace"),
+                    }
+
                 item_id = result.get("id", str(uuid.uuid4()))
                 return {
                     "name":       name,
@@ -792,7 +1108,6 @@ async def deploy(req: DeployRequest):
                     "verify_url": f"/api/fabric/workspaces/{ws}/items",
                 }
             except HTTPException as exc:
-                # Surface the actual Fabric API rejection message
                 detail = exc.detail if hasattr(exc, "detail") else str(exc)
                 return {
                     "name":        name, "type": item_type,
@@ -816,69 +1131,110 @@ async def deploy(req: DeployRequest):
             "live":   False,
         }
 
-    # ── Notebooks ──────────────────────────────────────────────────────────────
-    layers = []
-    if req.create_bronze:
-        layers.append(("Bronze", _bronze_cells(req.source_type, req.module, tables)))
-    if req.create_silver:
-        layers.append(("Silver", _silver_cells(req.source_type, req.module)))
-    if req.create_gold:
-        layers.append(("Gold",   _gold_cells(req.source_type, req.module)))
+    try:
+        # ── Notebooks ──────────────────────────────────────────────────────────
+        def _build_cells(layer: str) -> list[str]:
+            """Return cells — from user-edited code if provided, else auto-generated."""
+            key    = layer.lower()
+            kernel = req.notebook_types.get(key, "pyspark")
+            # User-edited code overrides auto-generated cells
+            custom_code = req.custom_notebook_code.get(key, "").strip()
+            if custom_code:
+                return _code_to_cells(custom_code)
+            if layer == "Bronze":
+                return (
+                    _bronze_sql_cells(req.source_type, req.module, tables, req.custom_sql)
+                    if kernel == "sql" else
+                    _bronze_cells(req.source_type, req.module, tables, req.custom_sql)
+                )
+            if layer == "Silver":
+                return (
+                    _silver_sql_cells(req.source_type, req.module, tables, req.silver_sql)
+                    if kernel == "sql" else
+                    _silver_cells(req.source_type, req.module, tables, req.silver_sql)
+                )
+            if layer == "Gold":
+                return (
+                    _gold_sql_cells(req.source_type, req.module, tables, req.gold_sql)
+                    if kernel == "sql" else
+                    _gold_cells(req.source_type, req.module, tables, req.gold_sql)
+                )
+            return []
 
-    for layer, cells in layers:
-        nb_name = f"{prefix}_{layer}_Notebook"
-        nb64    = _make_notebook_b64(nb_name, cells)
-        art     = await _make(nb_name, "Notebook", {
-            "format": "ipynb",
-            "parts": [{"path": "artifact.content.ipynb",
-                       "payload": nb64, "payloadType": "InlineBase64"}],
-        })
-        artifacts.append(art)
-        # Only register notebooks that actually exist in Fabric
-        if art["status"] in ("created", "simulated"):
-            nb_ids[layer] = art["id"]
+        layers = []
+        if req.create_bronze: layers.append("Bronze")
+        if req.create_silver: layers.append("Silver")
+        if req.create_gold:   layers.append("Gold")
 
-    # ── Data Pipeline ──────────────────────────────────────────────────────────
-    if req.create_pipeline:
-        activities, prev = [], None
-        for layer in ("Bronze", "Silver", "Gold"):
-            if layer not in nb_ids:
-                continue
-            act = {
-                "name":      f"Run_{layer}",
-                "type":      "TridentNotebook",
-                "dependsOn": ([{"activity": prev,
-                                "dependencyConditions": ["Succeeded"]}]
-                              if prev else []),
-                "typeProperties": {
-                    "notebookId":  nb_ids[layer],
-                    "workspaceId": ws,
-                },
-            }
-            activities.append(act)
-            prev = act["name"]
+        for layer in layers:
+            kernel  = req.notebook_types.get(layer.lower(), "pyspark")
+            cells   = _build_cells(layer)
+            nb_name = f"{prefix}_{layer}_Notebook"
+            nb64    = _make_notebook_b64(nb_name, cells, kernel=kernel)
+            art     = await _make(nb_name, "Notebook", {
+                # Correct path per MS Fabric Notebook Items API docs
+                "format": "ipynb",
+                "parts": [{"path": "notebook-content.ipynb",
+                           "payload": nb64, "payloadType": "InlineBase64"}],
+            })
+            artifacts.append(art)
+            # Only register notebooks that actually exist (or are simulated) in Fabric
+            if art["status"] in ("created", "simulated", "pending"):
+                nb_ids[layer] = art["id"]
 
-        pl_content = {
-            "name": f"{prefix}_Pipeline",
-            "properties": {"activities": activities},
+        # ── Data Pipeline ──────────────────────────────────────────────────────
+        if req.create_pipeline:
+            # Use user-edited pipeline JSON if provided, else auto-generate
+            custom_pl = req.custom_pipeline_json.strip()
+            if custom_pl:
+                try:
+                    pl_content = json.loads(custom_pl)
+                except json.JSONDecodeError as e:
+                    raise HTTPException(400, f"Invalid pipeline JSON: {e}") from e
+            else:
+                activities, prev = [], None
+                for layer in ("Bronze", "Silver", "Gold"):
+                    if layer not in nb_ids:
+                        continue
+                    act = {
+                        "name":      f"Run_{layer}",
+                        "type":      "TridentNotebook",
+                        "dependsOn": ([{"activity": prev,
+                                        "dependencyConditions": ["Succeeded"]}]
+                                      if prev else []),
+                        "typeProperties": {
+                            "notebookId":  nb_ids[layer],
+                            "workspaceId": ws,
+                        },
+                    }
+                    activities.append(act)
+                    prev = act["name"]
+                # Correct pipeline content JSON per MS Fabric DataPipeline Items API docs:
+                # top-level key is "properties" only — no "name" field
+                pl_content = {"properties": {"activities": activities}}
+
+            pl_def = base64.b64encode(json.dumps(pl_content).encode()).decode()
+            # Pipeline definition does NOT need a "format" field per MS docs
+            art = await _make(f"{prefix}_Pipeline", "DataPipeline", {
+                "parts": [{"path": "pipeline-content.json",
+                           "payload": pl_def, "payloadType": "InlineBase64"}],
+            })
+            artifacts.append(art)
+
+        return {
+            "live":         live,
+            "total":        len(artifacts),
+            "artifacts":    artifacts,
+            "workspace_id": ws,
+            "note": ("" if live
+                     else "No active Fabric connection — all artifacts simulated. "
+                          "Add a connection in Settings → Fabric Connections."),
         }
-        pl_def = base64.b64encode(json.dumps(pl_content).encode()).decode()
-        art = await _make(f"{prefix}_Pipeline", "DataPipeline", {
-            "format": "json",
-            "parts": [{"path": "pipeline-content.json",
-                       "payload": pl_def, "payloadType": "InlineBase64"}],
-        })
-        artifacts.append(art)
 
-    return {
-        "live":         live,
-        "total":        len(artifacts),
-        "artifacts":    artifacts,
-        "workspace_id": ws,
-        "note": ("" if live
-                 else "No active Fabric connection — all artifacts simulated. "
-                      "Add a connection in Settings → Fabric Connections."),
-    }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Deployment error: {exc}") from exc
 
 
 # ══════════════════════════════════════════════════════════════════════════════
