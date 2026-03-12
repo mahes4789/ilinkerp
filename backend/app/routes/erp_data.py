@@ -1,6 +1,8 @@
 """ERP Sources, Modules, and Data Dictionary tables."""
 from __future__ import annotations
+import asyncio
 from fastapi import APIRouter, HTTPException, Query
+import httpx
 
 router = APIRouter()
 
@@ -355,4 +357,252 @@ async def list_tables(source: str = Query(...), module: str = Query(...)):
         "tables":      tables,
         "total":       len(tables),
         "core_count":  sum(1 for t in tables if t.get("is_core")),
+    }
+
+
+# ── Live Connection Test ───────────────────────────────────────────────────────
+@router.post("/test-connection")
+async def test_connection(body: dict):
+    """
+    Test ERP database / API connectivity with the supplied credentials.
+
+    Oracle EBS    → oracledb thin-mode JDBC connect
+    Oracle Fusion → HTTP GET to REST API metadata URL
+    SAP S/4HANA   → HTTP ping to HANA REST endpoint
+    Dynamics 365  → Azure AD client-credentials token
+    Others        → graceful informational response
+    """
+    erp_type  = body.get("erp_type", "")
+    host      = body.get("host", "")
+    port      = int(body.get("port") or 1521)
+    service   = body.get("service", body.get("database", ""))
+    username  = body.get("username", "")
+    password  = body.get("password", "")
+
+    # ── Oracle EBS — thin JDBC via python-oracledb ─────────────────────────────
+    if erp_type == "oracle_ebs":
+        def _connect():
+            import oracledb  # pip install oracledb  (thin mode — no Oracle Client needed)
+            conn = oracledb.connect(user=username, password=password,
+                                    dsn=f"{host}:{port}/{service}")
+            ver = conn.version
+            conn.close()
+            return ver
+        try:
+            ver = await asyncio.get_event_loop().run_in_executor(None, _connect)
+            return {"success": True,
+                    "message": f"Connected — Oracle Database {ver}",
+                    "version": ver}
+        except ImportError:
+            return {"success": False,
+                    "message": "oracledb package not found in this container. "
+                               "Add 'oracledb' to requirements.txt and rebuild."}
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    # ── Oracle Fusion Cloud — REST metadata endpoint ───────────────────────────
+    if erp_type == "oracle_fusion":
+        url = f"https://{host}/fscmRestApi/resources/v1"
+        try:
+            async with httpx.AsyncClient(timeout=12, verify=False) as client:
+                r = await client.get(url, auth=(username, password))
+            if r.status_code == 200:
+                return {"success": True,
+                        "message": "Oracle Fusion REST API reachable — credentials valid"}
+            if r.status_code in (401, 403):
+                return {"success": False,
+                        "message": f"Oracle Fusion responded HTTP {r.status_code} — "
+                                   "check username / password"}
+            return {"success": False,
+                    "message": f"Oracle Fusion API returned HTTP {r.status_code}"}
+        except Exception as exc:
+            return {"success": False, "message": f"Cannot reach {host}: {exc}"}
+
+    # ── SAP S/4HANA — HANA REST ping ──────────────────────────────────────────
+    if erp_type == "sap_s4hana":
+        url = f"https://{host}:{port}/api/v1/ping"
+        try:
+            async with httpx.AsyncClient(timeout=8, verify=False) as client:
+                r = await client.get(url, auth=(username, password))
+            return {
+                "success": r.status_code < 400,
+                "message": (f"SAP HANA REST API reachable — HTTP {r.status_code}"
+                            if r.status_code < 400
+                            else f"SAP HANA responded HTTP {r.status_code}"),
+            }
+        except Exception as exc:
+            return {"success": False, "message": f"Cannot reach SAP HANA {host}:{port}: {exc}"}
+
+    # ── Dynamics 365 F&O — Azure AD client-credentials ────────────────────────
+    if erp_type == "dynamics_365_fo":
+        tenant_id     = body.get("tenant_id", "")
+        client_id     = body.get("client_id", "")
+        client_secret = body.get("client_secret", "")
+        if tenant_id and client_id and client_secret:
+            try:
+                async with httpx.AsyncClient(timeout=12) as client:
+                    r = await client.post(
+                        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                        data={
+                            "grant_type":    "client_credentials",
+                            "client_id":     client_id,
+                            "client_secret": client_secret,
+                            "scope":         f"https://{host}/.default",
+                        },
+                    )
+                data = r.json()
+                if "access_token" in data:
+                    return {"success": True,
+                            "message": "Azure AD token obtained — credentials valid"}
+                return {"success": False,
+                        "message": f"Azure AD auth failed: "
+                                   f"{data.get('error_description', data.get('error', 'unknown'))}"}
+            except Exception as exc:
+                return {"success": False, "message": str(exc)}
+        return {"success": False,
+                "message": "tenant_id, client_id and client_secret are required for Dynamics 365"}
+
+    # ── Generic fallback ───────────────────────────────────────────────────────
+    return {
+        "success":   True,
+        "simulated": True,
+        "message":   (f"Credentials saved for {erp_type}. "
+                      "Live connection test is not available for this ERP type — "
+                      "credentials will be used when deploying Fabric notebooks."),
+    }
+
+
+# ── Live Table Scan ────────────────────────────────────────────────────────────
+@router.post("/scan-tables")
+async def scan_tables(body: dict):
+    """
+    Verify which module tables actually exist in the connected ERP database/API.
+
+    Oracle EBS      → queries ALL_TABLES via oracledb thin mode
+    Oracle Fusion   → all standard views assumed present (REST API, not direct DB)
+    SAP S/4HANA     → queries SYS.TABLES via hdbcli (if installed)
+    Others          → returns all tables as "assumed found" with a note
+    """
+    erp_type  = body.get("erp_type", "")
+    host      = body.get("host", "")
+    port      = int(body.get("port") or 1521)
+    service   = body.get("service", body.get("database", ""))
+    username  = body.get("username", "")
+    password  = body.get("password", "")
+    schema    = body.get("schema", "")
+    tables    = body.get("tables", [])
+
+    if not tables:
+        raise HTTPException(400, "tables list is required")
+
+    # ── Oracle EBS — query ALL_TABLES ─────────────────────────────────────────
+    if erp_type == "oracle_ebs":
+        def _scan():
+            import oracledb
+            conn = oracledb.connect(user=username, password=password,
+                                    dsn=f"{host}:{port}/{service}")
+            try:
+                cur = conn.cursor()
+                upper_names = [t.upper() for t in tables]
+                # Build bind variables  (:0, :1, …) to avoid SQL injection
+                binds     = ", ".join(f":{i}" for i in range(len(upper_names)))
+                bind_vals = {str(i): t for i, t in enumerate(upper_names)}
+                if schema:
+                    sql = (f"SELECT TABLE_NAME FROM ALL_TABLES "
+                           f"WHERE TABLE_NAME IN ({binds}) "
+                           f"AND OWNER = :owner")
+                    bind_vals["owner"] = schema.upper()
+                else:
+                    sql = f"SELECT TABLE_NAME FROM ALL_TABLES WHERE TABLE_NAME IN ({binds})"
+                cur.execute(sql, bind_vals)
+                found_set = {row[0] for row in cur.fetchall()}
+                cur.close()
+                return found_set
+            finally:
+                conn.close()
+
+        try:
+            found_set = await asyncio.get_event_loop().run_in_executor(None, _scan)
+            found     = [t for t in tables if t.upper() in found_set]
+            missing   = [t for t in tables if t.upper() not in found_set]
+            return {
+                "found":   found,
+                "missing": missing,
+                "total":   len(tables),
+                "scanned": len(tables),
+                "method":  "live_oracle",
+            }
+        except ImportError:
+            return {
+                "found": [], "missing": tables,
+                "total": len(tables), "scanned": 0, "method": "error",
+                "error": "oracledb not installed in container. "
+                         "Add 'oracledb' to requirements.txt and rebuild.",
+            }
+        except Exception as exc:
+            return {
+                "found": [], "missing": tables,
+                "total": len(tables), "scanned": 0, "method": "error",
+                "error": str(exc),
+            }
+
+    # ── Oracle Fusion Cloud — REST views, not direct DB tables ─────────────────
+    if erp_type == "oracle_fusion":
+        return {
+            "found":   tables,
+            "missing": [],
+            "total":   len(tables),
+            "scanned": len(tables),
+            "method":  "assumed",
+            "note":    "Oracle Fusion Cloud exposes data via REST views. "
+                       "All standard module views are assumed present. "
+                       "Verify access after deployment.",
+        }
+
+    # ── SAP S/4HANA — query SYS.TABLES via hdbcli ─────────────────────────────
+    if erp_type == "sap_s4hana":
+        def _scan_hana():
+            import hdbcli.dbapi as hdb  # pip install hdbcli
+            conn = hdb.connect(address=host, port=port,
+                               user=username, password=password)
+            try:
+                cur = conn.cursor()
+                names_sql = ", ".join(f"'{t.upper()}'" for t in tables)
+                cur.execute(
+                    f'SELECT TABLE_NAME FROM "SYS"."TABLES" '
+                    f'WHERE TABLE_NAME IN ({names_sql})'
+                )
+                found_set = {row[0] for row in cur.fetchall()}
+                cur.close()
+                return found_set
+            finally:
+                conn.close()
+
+        try:
+            found_set = await asyncio.get_event_loop().run_in_executor(None, _scan_hana)
+            found     = [t for t in tables if t.upper() in found_set]
+            missing   = [t for t in tables if t.upper() not in found_set]
+            return {
+                "found": found, "missing": missing,
+                "total": len(tables), "scanned": len(tables), "method": "live_hana",
+            }
+        except ImportError:
+            pass   # hdbcli not installed — fall through to assumed
+        except Exception as exc:
+            return {
+                "found": [], "missing": tables,
+                "total": len(tables), "scanned": 0, "method": "error",
+                "error": str(exc),
+            }
+
+    # ── Generic fallback — all tables assumed present ──────────────────────────
+    return {
+        "found":   tables,
+        "missing": [],
+        "total":   len(tables),
+        "scanned": len(tables),
+        "method":  "assumed",
+        "note":    (f"Live table scan is not available for {erp_type}. "
+                    "All industry-standard module tables are assumed present. "
+                    "Tables will be verified when the Bronze notebook runs."),
     }

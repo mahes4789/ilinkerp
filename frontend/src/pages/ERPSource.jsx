@@ -283,16 +283,31 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
     setTesting(true); setResult(null);
     try {
       const r = await axios.post(`${API}/api/erp/test-connection`, {
-        erp_type: wizard.source,
-        host:     wizard.connFields.host     ?? "",
-        port:     parseInt(wizard.connFields.port ?? "1521"),
-        service:  wizard.connFields.service  ?? wizard.connFields.database ?? "",
-        username: wizard.connFields.username ?? "",
-        password: wizard.connFields.password ?? "",
+        erp_type:      wizard.source,
+        host:          wizard.connFields.host          ?? "",
+        port:          parseInt(wizard.connFields.port ?? "1521"),
+        service:       wizard.connFields.service       ?? wizard.connFields.database ?? "",
+        username:      wizard.connFields.username      ?? "",
+        password:      wizard.connFields.password      ?? "",
+        // Dynamics 365 fields
+        tenant_id:     wizard.connFields.tenant_id     ?? "",
+        client_id:     wizard.connFields.client_id     ?? "",
+        client_secret: wizard.connFields.client_secret ?? "",
+        // SAP fields
+        system_number: wizard.connFields.system_number ?? "",
+        client:        wizard.connFields.client        ?? "",
       });
-      setResult({ ok: r.data.success, msg: r.data.message ?? "Connection successful" });
-    } catch {
-      setResult({ ok: true, msg: "Connection test completed (demo — no live ERP in sandbox)", demo: true });
+      const d = r.data;
+      setResult({
+        ok:        d.success,
+        msg:       d.message ?? (d.success ? "Connection successful" : "Connection failed"),
+        simulated: d.simulated ?? false,
+      });
+    } catch (err) {
+      setResult({
+        ok:  false,
+        msg: err.response?.data?.detail ?? err.message ?? "Connection test failed",
+      });
     } finally {
       setTesting(false);
     }
@@ -352,7 +367,11 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
             }}>
               {testResult.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
               {testResult.msg}
-              {testResult.demo && <span style={{ fontSize: 11, color: "#f59e0b" }}>(demo)</span>}
+              {testResult.simulated && (
+                <span style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>
+                  (credentials stored)
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -381,6 +400,7 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
 function StepDiscover({ wizard, setWizard, onNext, onBack }) {
   const [scanning,       setScanning]       = useState(false);
   const [scanned,        setScanned]        = useState(false);
+  const [scanResult,     setScanResult]     = useState(null);  // { found:[], missing:[], method, note, error }
   const [selectedTables, setSelectedTables] = useState([]); // table_name strings
   const [filter,         setFilter]         = useState("");  // search filter
 
@@ -401,11 +421,12 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
     }
   }, [stdTables]); // eslint-disable-line
 
-  // Deterministic scan simulation: every 7th table is "missing"
+  // Merge scan results into the standard table list
   const scannedTables = useMemo(() => {
-    if (!scanned || stdTables.length === 0) return [];
-    return stdTables.map((t, i) => ({ ...t, found: i % 7 !== 0 }));
-  }, [scanned, stdTables]);
+    if (!scanned || !scanResult || stdTables.length === 0) return [];
+    const foundSet = new Set((scanResult.found ?? []).map(n => n.toUpperCase()));
+    return stdTables.map(t => ({ ...t, found: foundSet.has(t.table_name.toUpperCase()) }));
+  }, [scanned, scanResult, stdTables]);
 
   const found   = scannedTables.filter(t =>  t.found);
   const missing = scannedTables.filter(t => !t.found);
@@ -428,16 +449,40 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
 
   const runScan = async () => {
     setScanning(true);
-    await new Promise(r => setTimeout(r, 1800));
-    setScanned(true);
-    setScanning(false);
-    const foundNames = stdTables
-      .filter((_, i) => i % 7 !== 0)
-      .map(t => t.table_name);
-    // Auto-deselect missing tables after scan
-    setSelectedTables(prev => prev.filter(n => foundNames.includes(n)));
-    setWizard(w => ({ ...w, discoveredTables: foundNames }));
-    toast.success(`Scan complete — ${foundNames.length}/${stdTables.length} tables found`);
+    try {
+      const r = await axios.post(`${API}/api/erp/scan-tables`, {
+        erp_type: wizard.source,
+        host:     wizard.connFields?.host     ?? "",
+        port:     parseInt(wizard.connFields?.port ?? "1521"),
+        service:  wizard.connFields?.service  ?? wizard.connFields?.database ?? "",
+        username: wizard.connFields?.username ?? "",
+        password: wizard.connFields?.password ?? "",
+        schema:   wizard.connFields?.schema   ?? "",
+        tables:   stdTables.map(t => t.table_name),
+      });
+      const data = r.data;
+      setScanResult(data);
+      setScanned(true);
+
+      if (data.method === "error") {
+        // Scan failed — keep all tables selected, show error
+        toast.error(`Scan error: ${data.error}`);
+      } else if (data.method === "assumed") {
+        // Not a live scan — all tables assumed present
+        toast(`${data.note ?? "All tables assumed present (live scan unavailable)"}`, { icon: "ℹ️" });
+        setWizard(w => ({ ...w, discoveredTables: data.found }));
+      } else {
+        // Live scan — auto-deselect missing tables
+        const foundSet = new Set((data.found ?? []).map(n => n.toUpperCase()));
+        setSelectedTables(prev => prev.filter(n => foundSet.has(n.toUpperCase())));
+        setWizard(w => ({ ...w, discoveredTables: data.found }));
+        toast.success(`Scan complete — ${data.found.length}/${stdTables.length} tables found in database`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail ?? "Table scan failed");
+    } finally {
+      setScanning(false);
+    }
   };
 
   const proceed = () => {
@@ -460,16 +505,37 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
             to include in your Fabric notebooks.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {scanned && scanResult?.method && (
+            <span style={{
+              fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 20,
+              background: scanResult.method === "live_oracle" || scanResult.method === "live_hana"
+                ? "#dcfce7" : scanResult.method === "error" ? "#fef2f2" : "#fef9c3",
+              color:      scanResult.method === "live_oracle" || scanResult.method === "live_hana"
+                ? "#15803d" : scanResult.method === "error" ? "#b91c1c" : "#92400e",
+              border:     "1px solid",
+              borderColor: scanResult.method === "live_oracle" || scanResult.method === "live_hana"
+                ? "#bbf7d0" : scanResult.method === "error" ? "#fecaca" : "#fde68a",
+            }}>
+              {scanResult.method === "live_oracle" ? "🔌 Live Oracle Scan"
+               : scanResult.method === "live_hana"   ? "🔌 Live HANA Scan"
+               : scanResult.method === "error"        ? "⚠ Scan Error"
+               : "ℹ Assumed Present"}
+            </span>
+          )}
           {!scanned ? (
             <button className="btn-primary" disabled={scanning || isLoading} onClick={runScan}>
               {scanning
-                ? <><RefreshCw size={13} className="spin" /> Scanning…</>
+                ? <><RefreshCw size={13} className="spin" /> Scanning database…</>
                 : <><Database size={13} /> Scan Live ERP</>}
             </button>
           ) : (
             <button className="btn-ghost"
-              onClick={() => { setScanned(false); setSelectedTables(stdTables.map(t => t.table_name)); }}>
+              onClick={() => {
+                setScanned(false);
+                setScanResult(null);
+                setSelectedTables(stdTables.map(t => t.table_name));
+              }}>
               <RefreshCw size={13} /> Re-scan
             </button>
           )}
@@ -496,8 +562,19 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
         </div>
       )}
 
+      {/* Assumed-present note */}
+      {scanned && scanResult?.method === "assumed" && (
+        <div style={{ padding: "12px 16px", background: "#fffbeb",
+                      border: "1px solid #fde68a", borderRadius: 10,
+                      fontSize: 12, color: "#92400e",
+                      display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <Info size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>{scanResult.note ?? "All tables assumed present — live scan unavailable for this ERP type."}</span>
+        </div>
+      )}
+
       {/* Missing tables alert */}
-      {scanned && missing.length > 0 && (
+      {scanned && missing.length > 0 && scanResult?.method !== "assumed" && (
         <div style={{ padding: "12px 16px", background: "#fffbeb",
                       border: "1px solid #fcd34d", borderRadius: 10 }}>
           <div style={{ fontWeight: 600, fontSize: 13, color: "#92400e",
