@@ -379,28 +379,36 @@ async def test_connection(body: dict):
     username  = body.get("username", "")
     password  = body.get("password", "")
 
-    # ── Oracle EBS — thin JDBC via python-oracledb ─────────────────────────────
-    if erp_type == "oracle_ebs":
+    # ── Oracle EBS / Oracle Fusion — JDBC via python-oracledb (thin mode) ───────
+    # Both oracle_ebs and oracle_fusion use the same JDBC connect when port ≠ 443.
+    # For Oracle Fusion Cloud (SaaS at port 443) we fall through to the REST test.
+    if erp_type in ("oracle_ebs", "oracle_fusion") and port != 443:
         def _connect():
-            import oracledb  # pip install oracledb  (thin mode — no Oracle Client needed)
-            conn = oracledb.connect(user=username, password=password,
-                                    dsn=f"{host}:{port}/{service}")
-            ver = conn.version
+            import oracledb  # thin mode — no Oracle Client needed
+            # Build DSN: prefer Easy Connect format  host:port/service
+            dsn  = f"{host}:{port}/{service}" if service else f"{host}:{port}"
+            conn = oracledb.connect(user=username, password=password, dsn=dsn)
+            ver  = conn.version
             conn.close()
             return ver
         try:
             ver = await asyncio.get_event_loop().run_in_executor(None, _connect)
-            return {"success": True,
-                    "message": f"Connected — Oracle Database {ver}",
-                    "version": ver}
+            return {
+                "success": True,
+                "message": f"Connected — Oracle Database {ver} at {host}:{port}/{service}",
+                "version": ver,
+            }
         except ImportError:
-            return {"success": False,
-                    "message": "oracledb package not found in this container. "
-                               "Add 'oracledb' to requirements.txt and rebuild."}
+            return {
+                "success": False,
+                "message": "oracledb package not found in this container. "
+                           "Add 'oracledb' to requirements.txt and rebuild.",
+            }
         except Exception as exc:
+            # Return the actual Oracle error (ORA-xxxxx, TNS, etc.)
             return {"success": False, "message": str(exc)}
 
-    # ── Oracle Fusion Cloud — REST metadata endpoint ───────────────────────────
+    # ── Oracle Fusion Cloud SaaS — REST metadata endpoint (port 443 / HTTPS) ──
     if erp_type == "oracle_fusion":
         url = f"https://{host}/fscmRestApi/resources/v1"
         try:
@@ -408,15 +416,16 @@ async def test_connection(body: dict):
                 r = await client.get(url, auth=(username, password))
             if r.status_code == 200:
                 return {"success": True,
-                        "message": "Oracle Fusion REST API reachable — credentials valid"}
+                        "message": "Oracle Fusion Cloud REST API reachable — credentials valid"}
             if r.status_code in (401, 403):
                 return {"success": False,
-                        "message": f"Oracle Fusion responded HTTP {r.status_code} — "
+                        "message": f"Oracle Fusion REST API responded HTTP {r.status_code} — "
                                    "check username / password"}
             return {"success": False,
-                    "message": f"Oracle Fusion API returned HTTP {r.status_code}"}
+                    "message": f"Oracle Fusion REST API returned HTTP {r.status_code}"}
         except Exception as exc:
-            return {"success": False, "message": f"Cannot reach {host}: {exc}"}
+            return {"success": False,
+                    "message": f"Cannot reach Oracle Fusion REST at {host}: {exc}"}
 
     # ── SAP S/4HANA — HANA REST ping ──────────────────────────────────────────
     if erp_type == "sap_s4hana":
