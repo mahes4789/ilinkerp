@@ -7,15 +7,16 @@
  * Step 4 · Fabric Connection (connection types + workspace config)
  * Step 5 · Deploy (create connection, notebooks, pipeline)
  */
-import { useState, useMemo, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import {
   Server, Database, CheckCircle2, AlertTriangle, XCircle,
   ChevronRight, ChevronLeft, RefreshCw, PlugZap, Play,
   FileCode, GitBranch, Cloud, Info, Circle, Eye, EyeOff,
   Zap, Layers, Table2, Link2, Shield, Package, LayoutDashboard,
-  Search, ListChecks, ExternalLink,
+  Search, ListChecks, ExternalLink, Key, Monitor, User,
+  Plus, Star, Wifi, WifiOff, Copy,
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -677,7 +678,279 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
 }
 
 // ── Step 4: Fabric Connection Setup ───────────────────────────────────────────
+// ── Inline auth method mini-form (used inside StepFabric) ────────────────────
+const QUICK_METHODS = [
+  { id: "bearer",           label: "Bearer Token",      Icon: Key     },
+  { id: "service_principal",label: "Service Principal", Icon: Server  },
+  { id: "device_code",      label: "Device Code",       Icon: Monitor },
+  { id: "managed_identity", label: "Managed Identity",  Icon: Cloud   },
+  { id: "username_password",label: "User/Password",     Icon: User    },
+];
+
+function QuickConnectPanel({ onSaved }) {
+  const qc = useQueryClient();
+  const [method,    setMethod]    = useState("bearer");
+  const [name,      setName]      = useState("");
+  const [wsId,      setWsId]      = useState("");
+  const [token,     setToken]     = useState("");
+  const [showTok,   setShowTok]   = useState(false);
+  const [spTenant,  setSpTenant]  = useState(""); const [spCid, setSpCid] = useState(""); const [spSec, setSpSec] = useState("");
+  const [dcTenant,  setDcTenant]  = useState(""); const [dcCid, setDcCid] = useState("");
+  const [dcSession, setDcSession] = useState(null);
+  const [dcPolling, setDcPolling] = useState(false);
+  const dcRef = useRef(null);
+  const [upTenant,  setUpTenant]  = useState(""); const [upCid, setUpCid] = useState("");
+  const [upUser,    setUpUser]    = useState(""); const [upPwd, setUpPwd] = useState("");
+  const [busy,      setBusy]      = useState(false);
+
+  const reset = () => {
+    setName(""); setWsId(""); setToken("");
+    setSpTenant(""); setSpCid(""); setSpSec("");
+    setDcTenant(""); setDcCid(""); setDcSession(null);
+    setUpTenant(""); setUpCid(""); setUpUser(""); setUpPwd("");
+  };
+
+  const onOk = (d) => {
+    qc.invalidateQueries(["fabric-connections"]);
+    reset();
+    toast.success(`"${d.name}" saved — ${d.test_result === "valid" ? "token valid ✓" : "token untested"}`);
+    onSaved?.(d);
+  };
+  const onErr = (e) => toast.error(e.response?.data?.detail ?? "Auth failed");
+
+  const go = async () => {
+    setBusy(true);
+    try {
+      let res;
+      if (method === "bearer") {
+        res = await axios.post(`${API}/api/fabric/fabric-connections`,
+          { name, token, workspace_id: wsId });
+      } else if (method === "service_principal") {
+        res = await axios.post(`${API}/api/fabric/auth/service-principal`,
+          { name, tenant_id: spTenant, client_id: spCid, client_secret: spSec, workspace_id: wsId });
+      } else if (method === "device_code") {
+        const s = await axios.post(`${API}/api/fabric/auth/device-code/start`,
+          { name, tenant_id: dcTenant, client_id: dcCid, workspace_id: wsId });
+        setDcSession(s.data);
+        setBusy(false);
+        // poll
+        setDcPolling(true);
+        dcRef.current = setInterval(async () => {
+          try {
+            const p = await axios.post(`${API}/api/fabric/auth/device-code/poll`,
+              { session_id: s.data.session_id, name, workspace_id: wsId });
+            if (p.data.status !== "pending") {
+              clearInterval(dcRef.current); setDcPolling(false); setDcSession(null);
+              onOk(p.data);
+            }
+          } catch (e2) {
+            clearInterval(dcRef.current); setDcPolling(false); setDcSession(null);
+            onErr(e2);
+          }
+        }, (s.data.interval ?? 5) * 1000);
+        return;
+      } else if (method === "managed_identity") {
+        res = await axios.post(`${API}/api/fabric/auth/managed-identity`,
+          { name: name || "Managed Identity", workspace_id: wsId });
+      } else if (method === "username_password") {
+        res = await axios.post(`${API}/api/fabric/auth/username-password`,
+          { name, tenant_id: upTenant, client_id: upCid, username: upUser, password: upPwd, workspace_id: wsId });
+      }
+      onOk(res.data);
+    } catch (e) { onErr(e); }
+    finally { setBusy(false); }
+  };
+
+  const valid = () => {
+    if (!name && method !== "managed_identity") return false;
+    if (method === "bearer")            return !!token;
+    if (method === "service_principal") return !!(spTenant && spCid && spSec);
+    if (method === "device_code")       return !!(dcTenant && dcCid);
+    if (method === "managed_identity")  return true;
+    if (method === "username_password") return !!(upTenant && upCid && upUser && upPwd);
+  };
+
+  const inp = (val, set, ph, pw) => (
+    <div style={{ position: "relative" }}>
+      <input className="input" type="text" value={val} onChange={e => set(e.target.value)}
+        placeholder={ph} style={{ fontSize: 11, fontFamily: "monospace" }} />
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Method tabs */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {QUICK_METHODS.map(({ id, label, Icon }) => {
+          const sel = method === id;
+          return (
+            <button key={id}
+              onClick={() => { setMethod(id); setDcSession(null); if (dcRef.current) clearInterval(dcRef.current); setDcPolling(false); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                cursor: "pointer", transition: "all 0.12s",
+                border: `1px solid ${sel ? "var(--color-primary)" : "#e2e8f0"}`,
+                background: sel ? "var(--color-primary)" : "white",
+                color: sel ? "white" : "#64748b",
+              }}>
+              <Icon size={11} /> {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Common: name + workspace */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {method !== "managed_identity" && (
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>
+              Connection Name *
+            </label>
+            <input className="input" value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. Fabric Prod" style={{ fontSize: 12 }} />
+          </div>
+        )}
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>
+            Workspace ID <span style={{ fontWeight: 400, color: "#94a3b8" }}>(optional)</span>
+          </label>
+          <input className="input" value={wsId} onChange={e => setWsId(e.target.value)}
+            placeholder="xxxxxxxx-xxxx-xxxx…" style={{ fontSize: 11, fontFamily: "monospace" }} />
+        </div>
+      </div>
+
+      {/* Method fields */}
+      {method === "bearer" && (
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>
+            Bearer Token *
+          </label>
+          <div style={{ position: "relative" }}>
+            <input className="input" type={showTok ? "text" : "password"} value={token}
+              onChange={e => setToken(e.target.value)}
+              placeholder="eyJ0eXAiOiJKV1Qi…"
+              style={{ fontSize: 11, fontFamily: "monospace", paddingRight: 36 }} />
+            <button type="button" onClick={() => setShowTok(p => !p)}
+              style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                       background: "none", border: "none", cursor: "pointer", color: "#64748b" }}>
+              {showTok ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {method === "service_principal" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Tenant ID *</label>
+            {inp(spTenant, setSpTenant, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Client ID *</label>
+            {inp(spCid, setSpCid, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+          <div style={{ gridColumn: "1/-1" }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Client Secret *</label>
+            <input className="input" type="password" value={spSec} onChange={e => setSpSec(e.target.value)}
+              placeholder="your-client-secret" style={{ fontSize: 12 }} />
+          </div>
+        </div>
+      )}
+
+      {method === "device_code" && !dcSession && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Tenant ID *</label>
+            {inp(dcTenant, setDcTenant, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Client ID *</label>
+            {inp(dcCid, setDcCid, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+        </div>
+      )}
+
+      {method === "device_code" && dcSession && (
+        <div style={{ padding: "12px 14px", borderRadius: 10, background: "#f0fdf4",
+                      border: "2px solid #bbf7d0" }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: "#15803d", marginBottom: 6 }}>
+            Open browser → authenticate
+          </div>
+          <a href={dcSession.verification_uri} target="_blank" rel="noreferrer"
+            style={{ fontSize: 12, color: "#1d4ed8", fontWeight: 600 }}>
+            {dcSession.verification_uri} <ExternalLink size={11} style={{ verticalAlign: "middle" }} />
+          </a>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <span style={{ padding: "6px 14px", borderRadius: 6, background: "#dcfce7",
+                           fontWeight: 800, fontSize: 18, letterSpacing: "0.12em",
+                           fontFamily: "monospace", color: "#15803d" }}>
+              {dcSession.user_code}
+            </span>
+            <button className="btn-ghost" style={{ fontSize: 11 }}
+              onClick={() => { navigator.clipboard.writeText(dcSession.user_code); toast("Copied"); }}>
+              <Copy size={11} /> Copy
+            </button>
+          </div>
+          {dcPolling && (
+            <div style={{ marginTop: 8, fontSize: 11, color: "#64748b",
+                          display: "flex", alignItems: "center", gap: 6 }}>
+              <RefreshCw size={11} className="spin" /> Waiting for authentication…
+            </div>
+          )}
+        </div>
+      )}
+
+      {method === "username_password" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Tenant ID *</label>
+            {inp(upTenant, setUpTenant, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Client ID *</label>
+            {inp(upCid, setUpCid, "xxxxxxxx-xxxx-xxxx")}
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Username *</label>
+            <input className="input" value={upUser} onChange={e => setUpUser(e.target.value)}
+              placeholder="user@contoso.com" style={{ fontSize: 12 }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Password *</label>
+            <input className="input" type="password" value={upPwd} onChange={e => setUpPwd(e.target.value)}
+              placeholder="••••••" style={{ fontSize: 12 }} />
+          </div>
+        </div>
+      )}
+
+      {method === "managed_identity" && (
+        <div style={{ fontSize: 12, color: "#64748b", padding: "8px 12px",
+                      background: "#fef9c3", borderRadius: 8, border: "1px solid #fde68a" }}>
+          ⚠️ Managed Identity only works on Azure VMs / containers with an identity assigned.
+          The backend will call the IMDS endpoint automatically.
+        </div>
+      )}
+
+      {!(method === "device_code" && dcSession) && (
+        <button className="btn-primary"
+          style={{ alignSelf: "flex-start", fontSize: 12 }}
+          disabled={!valid() || busy}
+          onClick={go}>
+          {busy
+            ? <><RefreshCw size={12} className="spin" /> Authenticating…</>
+            : method === "device_code"
+              ? <><Monitor size={12} /> Start Device Code</>
+              : <><Plus size={12} /> Add Connection</>
+          }
+        </button>
+      )}
+    </div>
+  );
+}
+
 function StepFabric({ wizard, setWizard, onNext, onBack }) {
+  const qc = useQueryClient();
   const [showParams,   setShowParams]   = useState(false);
   const [connParams,   setConnParams]   = useState({});
   const [creds,        setCreds]        = useState({ username: "", password: "", client_secret: "" });
@@ -685,10 +958,39 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   const [connResult,   setConnResult]   = useState(null);
   const [verifying,    setVerifying]    = useState(false);
   const [verifyResult, setVerifyResult] = useState(null);
+  const [showQuickConn, setShowQuickConn] = useState(false);
 
   // Workspace / lakehouse live pickers
   const [wsMode,       setWsMode]       = useState("manual"); // "manual" | "picker"
   const [lhMode,       setLhMode]       = useState("manual"); // "manual" | "picker"
+
+  // ── Saved Fabric connections (for active-connection banner + selector) ────────
+  const { data: connsData, refetch: refetchConns } = useQuery({
+    queryKey: ["fabric-connections"],
+    queryFn:  () => axios.get(`${API}/api/fabric/fabric-connections`).then(r => r.data),
+    refetchOnWindowFocus: false,
+  });
+  const savedConns = connsData?.connections ?? [];
+  const activeConn = savedConns.find(c => c.id === connsData?.active_id) ?? null;
+
+  // Auto-fill workspace_id from active connection when it has one
+  useEffect(() => {
+    if (activeConn?.workspace_id && !wizard.fabricWorkspace?.workspace_id) {
+      setWizard(w => ({
+        ...w,
+        fabricWorkspace: { ...w.fabricWorkspace, workspace_id: activeConn.workspace_id },
+      }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConn?.id]);
+
+  const activateConn = async (cid) => {
+    try {
+      await axios.post(`${API}/api/fabric/fabric-connections/${cid}/activate`);
+      refetchConns();
+      toast.success("Connection activated");
+    } catch { toast.error("Could not activate"); }
+  };
 
   // ── Connection types ────────────────────────────────────────────────────────
   const { data: ctData, isLoading: ctLoading } = useQuery({
@@ -793,9 +1095,120 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
       <div>
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Fabric Connection Setup</h2>
         <p style={{ fontSize: 13, color: "var(--color-muted)", margin: 0 }}>
-          Create a Fabric shareable connection for <strong>{wizard.sourceName}</strong> and
-          configure the target workspace.
+          Authenticate with Microsoft Fabric, then create a shareable connection for{" "}
+          <strong>{wizard.sourceName}</strong> and configure the target workspace.
         </p>
+      </div>
+
+      {/* ── Active Fabric Connection banner ──────────────────────────────────── */}
+      <div className="card" style={{ padding: 18 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10,
+                     display: "flex", alignItems: "center", gap: 8 }}>
+          <Wifi size={15} style={{ color: "var(--color-primary)" }} />
+          Fabric Authentication
+          {activeConn?.status === "valid" && (
+            <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, padding: "2px 10px",
+                           borderRadius: 20, background: "#dcfce7", color: "#15803d" }}>
+              LIVE
+            </span>
+          )}
+        </h3>
+
+        {/* Active connection display */}
+        {activeConn ? (
+          <div style={{
+            padding: "10px 14px", borderRadius: 10,
+            background: activeConn.status === "valid" ? "#f0fdf4" : "#fffbeb",
+            border: `1px solid ${activeConn.status === "valid" ? "#bbf7d0" : "#fde68a"}`,
+            marginBottom: 12,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              {activeConn.status === "valid"
+                ? <CheckCircle2 size={15} style={{ color: "#16a34a", flexShrink: 0 }} />
+                : <AlertTriangle size={15} style={{ color: "#d97706", flexShrink: 0 }} />}
+              <div style={{ flex: 1 }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                  {activeConn.name}
+                </span>
+                <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8,
+                               fontFamily: "monospace" }}>
+                  {activeConn.token_masked}
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: activeConn.status === "valid" ? "#15803d" : "#92400e",
+                             background: activeConn.status === "valid" ? "#dcfce7" : "#fef9c3",
+                             padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>
+                {activeConn.status === "valid" ? "Valid" : "Untested"}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: "10px 14px", borderRadius: 10, marginBottom: 12,
+                        background: "#fef2f2", border: "1px solid #fecaca",
+                        display: "flex", alignItems: "center", gap: 8 }}>
+            <WifiOff size={14} style={{ color: "#dc2626", flexShrink: 0 }} />
+            <span style={{ fontSize: 12, color: "#b91c1c" }}>
+              No active Fabric connection — operations will run in <strong>simulation mode</strong>.
+            </span>
+          </div>
+        )}
+
+        {/* Saved connections selector */}
+        {savedConns.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "#374151",
+                            display: "block", marginBottom: 5 }}>
+              Switch Active Connection
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {savedConns.map(c => (
+                <button key={c.id}
+                  onClick={() => activateConn(c.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                    cursor: "pointer", transition: "all 0.1s",
+                    border: `1px solid ${c.id === connsData?.active_id ? "var(--color-primary)" : "#e2e8f0"}`,
+                    background: c.id === connsData?.active_id ? "var(--color-primary)" : "white",
+                    color: c.id === connsData?.active_id ? "white" : "#374151",
+                  }}>
+                  {c.id === connsData?.active_id && <Star size={10} />}
+                  {c.name}
+                  {c.status === "valid" && <Wifi size={9} style={{ color: c.id === connsData?.active_id ? "white" : "#22c55e" }} />}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Collapsible quick-connect panel */}
+        <button
+          className="btn-outline"
+          style={{ fontSize: 12, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6 }}
+          onClick={() => setShowQuickConn(p => !p)}>
+          <Plus size={13} />
+          {showQuickConn ? "Hide" : "Add New"} Fabric Connection
+          <ChevronRight size={12}
+            style={{ transform: showQuickConn ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+        </button>
+
+        {showQuickConn && (
+          <div className="fade-in" style={{ marginTop: 14, padding: "14px 16px",
+                                            border: "1px solid #e2e8f0", borderRadius: 10,
+                                            background: "#fafbfc" }}>
+            <QuickConnectPanel onSaved={(d) => {
+              refetchConns();
+              setShowQuickConn(false);
+              // Auto-fill workspace if returned
+              if (d.workspaces?.length > 0 && !wizard.fabricWorkspace?.workspace_id) {
+                setWizard(w => ({
+                  ...w,
+                  fabricWorkspace: { ...w.fabricWorkspace, workspace_id: d.workspaces[0].id },
+                }));
+              }
+            }} />
+          </div>
+        )}
       </div>
 
       {/* ── Connection Types ─────────────────────────────────────────────────── */}

@@ -963,3 +963,257 @@ async def update_fabric_connection(cid: str, body: dict):
     if "note"         in body: conn["note"]         = body["note"]
     _conn_store._save()
     return {"status": "updated", "id": cid}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OAuth2 / Auth method endpoints
+# Supports: Bearer Token (direct), Service Principal, Device Code,
+#           Managed Identity, Username/Password (ROPC)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_AAD_TOKEN    = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+_AAD_DEVICE   = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode"
+_FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
+
+# In-memory device-code session store (keyed by session_id, expires with flow)
+_device_sessions: dict = {}
+
+
+async def _save_and_test(name: str, token: str, workspace_id: str,
+                         note: str, auth_method: str, expires_in: int) -> dict:
+    """Save connection, test it against Fabric API, return uniform response dict."""
+    conn = _conn_store.add(name, token, workspace_id, note)
+    status, workspaces = "unknown", []
+    try:
+        data       = await _fabric_get(token, f"{FABRIC_API}/workspaces")
+        workspaces = data.get("value", [])
+        status     = "valid"
+        _conn_store.set_status(conn["id"], "valid")
+    except Exception:
+        status = "invalid"
+        _conn_store.set_status(conn["id"], "invalid")
+    return {
+        "status":      "saved",
+        "id":          conn["id"],
+        "name":        conn["name"],
+        "auth_method": auth_method,
+        "expires_in":  expires_in,
+        "test_result": status,
+        "workspaces":  [{"id": w["id"], "name": w.get("displayName", "")}
+                        for w in workspaces[:10]],
+    }
+
+
+# ── Service Principal (Client Credentials) ────────────────────────────────────
+class ServicePrincipalRequest(BaseModel):
+    name:          str
+    tenant_id:     str
+    client_id:     str
+    client_secret: str
+    workspace_id:  str = ""
+    note:          str = ""
+
+
+@router.post("/auth/service-principal")
+async def auth_service_principal(req: ServicePrincipalRequest):
+    """Obtain a Fabric Bearer token via Azure AD Service Principal (client credentials)."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            _AAD_TOKEN.format(tenant=req.tenant_id),
+            data={
+                "grant_type":    "client_credentials",
+                "client_id":     req.client_id,
+                "client_secret": req.client_secret,
+                "scope":         _FABRIC_SCOPE,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    body = r.json()
+    if r.status_code != 200 or "access_token" not in body:
+        raise HTTPException(
+            401, f"Azure AD rejected credentials: {body.get('error_description', r.text[:200])}"
+        )
+    return await _save_and_test(
+        req.name, body["access_token"], req.workspace_id,
+        req.note or f"Service Principal · {req.client_id[:8]}…",
+        "service_principal", body.get("expires_in", 3600),
+    )
+
+
+# ── Device Code (OAuth2 interactive) ─────────────────────────────────────────
+class DeviceCodeStartRequest(BaseModel):
+    tenant_id:    str
+    client_id:    str
+    name:         str = "Device Code Connection"
+    workspace_id: str = ""
+    note:         str = ""
+
+
+class DeviceCodePollRequest(BaseModel):
+    session_id:   str
+    name:         str = ""
+    workspace_id: str = ""
+    note:         str = ""
+
+
+@router.post("/auth/device-code/start")
+async def auth_device_code_start(req: DeviceCodeStartRequest):
+    """
+    Start OAuth2 Device Code flow.
+    Returns user_code + verification_uri — user visits the URL and enters the code.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            _AAD_DEVICE.format(tenant=req.tenant_id),
+            data={
+                "client_id": req.client_id,
+                "scope":     f"{_FABRIC_SCOPE} offline_access",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    body = r.json()
+    if r.status_code != 200:
+        raise HTTPException(
+            400, f"Device code error: {body.get('error_description', r.text[:200])}"
+        )
+    session_id = str(uuid.uuid4())
+    _device_sessions[session_id] = {
+        "device_code":  body["device_code"],
+        "client_id":    req.client_id,
+        "tenant_id":    req.tenant_id,
+        "name":         req.name,
+        "workspace_id": req.workspace_id,
+        "note":         req.note,
+        "expires_at":   datetime.utcnow().timestamp() + body.get("expires_in", 900),
+        "interval":     body.get("interval", 5),
+    }
+    return {
+        "session_id":       session_id,
+        "user_code":        body["user_code"],
+        "verification_uri": body["verification_uri"],
+        "expires_in":       body.get("expires_in", 900),
+        "interval":         body.get("interval", 5),
+        "message":          body.get("message",
+            f"Open {body['verification_uri']} and enter code {body['user_code']}"),
+    }
+
+
+@router.post("/auth/device-code/poll")
+async def auth_device_code_poll(req: DeviceCodePollRequest):
+    """
+    Poll for device code token.
+    Returns status=pending while waiting, saves connection on success.
+    """
+    sess = _device_sessions.get(req.session_id)
+    if not sess:
+        raise HTTPException(404, "Session not found or expired. Start a new device code flow.")
+    if datetime.utcnow().timestamp() > sess["expires_at"]:
+        _device_sessions.pop(req.session_id, None)
+        raise HTTPException(410, "Device code expired — start a new flow.")
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            _AAD_TOKEN.format(tenant=sess["tenant_id"]),
+            data={
+                "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
+                "client_id":   sess["client_id"],
+                "device_code": sess["device_code"],
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    body = r.json()
+    err  = body.get("error", "")
+
+    if err in ("authorization_pending", "slow_down"):
+        return {"status": "pending", "message": "Waiting for user to complete authentication…"}
+
+    if err:
+        _device_sessions.pop(req.session_id, None)
+        raise HTTPException(401, f"Auth failed: {body.get('error_description', err)}")
+
+    _device_sessions.pop(req.session_id, None)
+    return await _save_and_test(
+        req.name or sess["name"],
+        body["access_token"],
+        req.workspace_id or sess.get("workspace_id", ""),
+        req.note or sess.get("note", "") or "Device Code OAuth2",
+        "device_code", body.get("expires_in", 3600),
+    )
+
+
+# ── Managed Identity (Azure VM / Container) ───────────────────────────────────
+class ManagedIdentityRequest(BaseModel):
+    name:         str = "Managed Identity"
+    resource:     str = "https://api.fabric.microsoft.com"
+    workspace_id: str = ""
+    note:         str = ""
+
+
+@router.post("/auth/managed-identity")
+async def auth_managed_identity(req: ManagedIdentityRequest):
+    """
+    Obtain token from Azure Managed Identity IMDS endpoint (169.254.169.254).
+    Requires an Azure VM or container with a system/user-assigned managed identity.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "http://169.254.169.254/metadata/identity/oauth2/token",
+                params={"api-version": "2018-02-01", "resource": req.resource},
+                headers={"Metadata": "true"},
+            )
+    except (httpx.ConnectError, httpx.TimeoutException):
+        raise HTTPException(
+            503,
+            "Managed Identity endpoint (169.254.169.254) is not reachable. "
+            "This method only works on Azure VMs or containers with a managed identity assigned.",
+        )
+    body = r.json()
+    if r.status_code != 200 or "access_token" not in body:
+        raise HTTPException(500, f"Managed Identity error: {body.get('error', r.text[:200])}")
+    return await _save_and_test(
+        req.name, body["access_token"], req.workspace_id,
+        req.note or "Azure Managed Identity",
+        "managed_identity", int(body.get("expires_in", 3600)),
+    )
+
+
+# ── Username / Password (ROPC) ────────────────────────────────────────────────
+class ROPCRequest(BaseModel):
+    name:         str
+    tenant_id:    str
+    client_id:    str
+    username:     str
+    password:     str
+    workspace_id: str = ""
+    note:         str = ""
+
+
+@router.post("/auth/username-password")
+async def auth_username_password(req: ROPCRequest):
+    """
+    Obtain token via Username/Password (ROPC flow).
+    Accounts with MFA enforced will fail — use Device Code instead.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            _AAD_TOKEN.format(tenant=req.tenant_id),
+            data={
+                "grant_type": "password",
+                "client_id":  req.client_id,
+                "username":   req.username,
+                "password":   req.password,
+                "scope":      _FABRIC_SCOPE,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    body = r.json()
+    if r.status_code != 200 or "access_token" not in body:
+        raise HTTPException(
+            401, f"Auth failed: {body.get('error_description', body.get('error', r.text[:200]))}"
+        )
+    return await _save_and_test(
+        req.name, body["access_token"], req.workspace_id,
+        req.note or f"Username/Password · {req.username}",
+        "username_password", body.get("expires_in", 3600),
+    )
