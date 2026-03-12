@@ -1027,9 +1027,17 @@ async def preview_notebooks(req: PreviewNotebooksRequest):
                 "type":      "TridentNotebook",
                 "dependsOn": ([{"activity": prev,
                                 "dependencyConditions": ["Succeeded"]}] if prev else []),
+                "policy": {
+                    "timeout":              "0.12:00:00",
+                    "retry":                0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput":         False,
+                    "secureInput":          False,
+                },
                 "typeProperties": {
                     "notebookId":  f"<{layer.lower()}-notebook-id>",
-                    "workspaceId": "<workspace-id>",
+                    # Use zero GUID for same-workspace notebooks per MS docs
+                    "workspaceId": "00000000-0000-0000-0000-000000000000",
                 },
             }
             activities.append(act)
@@ -1202,22 +1210,51 @@ async def deploy(req: DeployRequest):
                         "dependsOn": ([{"activity": prev,
                                         "dependencyConditions": ["Succeeded"]}]
                                       if prev else []),
+                        # policy is required per Fabric DataPipeline activity spec
+                        "policy": {
+                            "timeout":              "0.12:00:00",
+                            "retry":                0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput":         False,
+                            "secureInput":          False,
+                        },
                         "typeProperties": {
-                            "notebookId":  nb_ids[layer],
-                            "workspaceId": ws,
+                            "notebookId": nb_ids[layer],
+                            # Per MS docs: use zero GUID when notebook is in the
+                            # same workspace as the pipeline
+                            "workspaceId": "00000000-0000-0000-0000-000000000000",
                         },
                     }
                     activities.append(act)
                     prev = act["name"]
-                # Correct pipeline content JSON per MS Fabric DataPipeline Items API docs:
-                # top-level key is "properties" only — no "name" field
                 pl_content = {"properties": {"activities": activities}}
 
+            pl_name = f"{prefix}_Pipeline"
             pl_def = base64.b64encode(json.dumps(pl_content).encode()).decode()
-            # Pipeline definition does NOT need a "format" field per MS docs
-            art = await _make(f"{prefix}_Pipeline", "DataPipeline", {
-                "parts": [{"path": "pipeline-content.json",
-                           "payload": pl_def, "payloadType": "InlineBase64"}],
+
+            # .platform metadata part — required alongside pipeline-content.json
+            platform_meta = {
+                "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+                "metadata": {
+                    "type":        "DataPipeline",
+                    "displayName": pl_name,
+                },
+                "config": {
+                    "version":   "2.0",
+                    "logicalId": "00000000-0000-0000-0000-000000000000",
+                },
+            }
+            pl_platform = base64.b64encode(
+                json.dumps(platform_meta).encode()
+            ).decode()
+
+            art = await _make(pl_name, "DataPipeline", {
+                "parts": [
+                    {"path": "pipeline-content.json",
+                     "payload": pl_def,      "payloadType": "InlineBase64"},
+                    {"path": ".platform",
+                     "payload": pl_platform, "payloadType": "InlineBase64"},
+                ],
             })
             artifacts.append(art)
 
