@@ -1761,7 +1761,7 @@ function StepDeploy({ wizard, onBack }) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#f8fafc", borderBottom: "1px solid #f1f5f9" }}>
-                {["Artifact Name", "Type", "Artifact ID", "Status"].map(h => (
+                {["Artifact Name", "Type", "Artifact ID", "Status / Error"].map(h => (
                   <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11,
                                        fontWeight: 600, color: "#64748b" }}>{h}</th>
                 ))}
@@ -1769,7 +1769,8 @@ function StepDeploy({ wizard, onBack }) {
             </thead>
             <tbody>
               {artifacts.map((a, i) => (
-                <tr key={i} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                <tr key={i} style={{ borderBottom: "1px solid #f1f5f9",
+                                     background: a.status === "failed" ? "#fff8f8" : "transparent" }}>
                   <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: 12, fontWeight: 600 }}>{a.name}</td>
                   <td style={{ padding: "10px 16px", fontSize: 12, color: "#64748b" }}>{a.type}</td>
                   <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>
@@ -1782,7 +1783,19 @@ function StepDeploy({ wizard, onBack }) {
                                                  "badge badge-red"
                     } style={{ fontSize: 10 }}>
                       {a.status}
+                      {a.http_status ? ` (HTTP ${a.http_status})` : ""}
                     </span>
+                    {a.error && (
+                      <div title={a.error} style={{
+                        marginTop: 4, fontSize: 10, color: "#b91c1c",
+                        fontFamily: "monospace", maxWidth: 320,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        background: "#fef2f2", padding: "2px 6px", borderRadius: 4,
+                        border: "1px solid #fecaca", cursor: "help",
+                      }}>
+                        ⚠ {a.error.length > 100 ? a.error.slice(0, 100) + "…" : a.error}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

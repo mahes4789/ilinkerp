@@ -405,20 +405,50 @@ def _make_notebook_b64(name: str, cells: list[str]) -> str:
 
 
 def _bronze_cells(source: str, module: str, tables: list[str]) -> list[str]:
+    """
+    Generate PySpark cells for the Bronze notebook.
+
+    Credentials resolution order (Fabric-compatible):
+      1. notebookutils Key Vault  — production (uncomment KV section)
+      2. Spark config             — passed by Data Pipeline → Parameters
+      3. os.environ               — Docker env_file / VM environment
+      4. Hardcoded placeholders   — fallback (replace before running)
+    """
     return [
+        # ── Cell 0: setup & credentials ─────────────────────────────────────
         f"# Bronze Layer — {source} {module} raw extraction\n"
-        "from pyspark.sql import SparkSession\n"
-        "spark = SparkSession.builder.appName('Bronze_Extract').getOrCreate()\n"
-        "JDBC = f\"jdbc:oracle:thin:@{{dbutils.secrets.get('erp','host')}}:"
-        "1521/{{dbutils.secrets.get('erp','svc')}}\"\n"
-        "OPTS = {'url': JDBC, 'user': dbutils.secrets.get('erp','user'), "
-        "'password': dbutils.secrets.get('erp','pwd'), 'driver': 'oracle.jdbc.OracleDriver'}"
+        "# Microsoft Fabric Notebook — PySpark\n"
+        "import os\n"
+        "from pyspark.sql import SparkSession\n\n"
+        "spark = SparkSession.builder.appName('Bronze_Extract').getOrCreate()\n\n"
+        "# ── Option A: notebookutils Key Vault (recommended for production) ──\n"
+        "# Uncomment the 5 lines below and set your Key Vault URL:\n"
+        "# from notebookutils import mssparkutils\n"
+        "# KV = 'https://YOUR-KEYVAULT.vault.azure.net/'\n"
+        "# ORACLE_HOST = mssparkutils.credentials.getSecret(KV, 'oracle-host')\n"
+        "# ORACLE_USER = mssparkutils.credentials.getSecret(KV, 'oracle-user')\n"
+        "# ORACLE_PWD  = mssparkutils.credentials.getSecret(KV, 'oracle-pwd')\n\n"
+        "# ── Option B: Pipeline parameters / environment variables (default) ─\n"
+        "ORACLE_HOST = spark.conf.get('spark.oracle.host',    os.getenv('ORACLE_HOST', 'your-oracle-host'))\n"
+        "ORACLE_PORT = spark.conf.get('spark.oracle.port',    os.getenv('ORACLE_PORT', '1521'))\n"
+        "ORACLE_SVC  = spark.conf.get('spark.oracle.service', os.getenv('ORACLE_SVC',  'orcl'))\n"
+        "ORACLE_USER = spark.conf.get('spark.oracle.user',    os.getenv('ORACLE_USER', ''))\n"
+        "ORACLE_PWD  = spark.conf.get('spark.oracle.password',os.getenv('ORACLE_PWD',  ''))\n\n"
+        "JDBC = f'jdbc:oracle:thin:@{ORACLE_HOST}:{ORACLE_PORT}/{ORACLE_SVC}'\n"
+        "OPTS = {\n"
+        "    'url':      JDBC,\n"
+        "    'user':     ORACLE_USER,\n"
+        "    'password': ORACLE_PWD,\n"
+        "    'driver':   'oracle.jdbc.OracleDriver',\n"
+        "}\n"
+        "print(f'Bronze: Connecting to {ORACLE_HOST}:{ORACLE_PORT}/{ORACLE_SVC}')",
     ] + [
+        # ── Cell N: one cell per table ───────────────────────────────────────
         f"# Extract {t}\n"
         f"df_{t.lower()} = spark.read.format('jdbc').options(**OPTS, dbtable='{t}').load()\n"
         f"df_{t.lower()}.write.format('delta').mode('overwrite')"
         f".option('overwriteSchema','true').saveAsTable('bronze.{t.lower()}')\n"
-        f"print('bronze.{t.lower()} written')"
+        f"print(f'bronze.{t.lower()} written — {{df_{t.lower()}.count()}} rows')"
         for t in (tables or ["HEADER_TABLE", "LINE_TABLE"])
     ]
 
@@ -761,6 +791,16 @@ async def deploy(req: DeployRequest):
                     "live":       True,
                     "verify_url": f"/api/fabric/workspaces/{ws}/items",
                 }
+            except HTTPException as exc:
+                # Surface the actual Fabric API rejection message
+                detail = exc.detail if hasattr(exc, "detail") else str(exc)
+                return {
+                    "name":        name, "type": item_type,
+                    "id":          str(uuid.uuid4()),
+                    "status":      "failed",
+                    "http_status": exc.status_code,
+                    "error":       detail,
+                }
             except Exception as exc:
                 return {
                     "name":   name, "type": item_type,
@@ -768,7 +808,7 @@ async def deploy(req: DeployRequest):
                     "status": "failed",
                     "error":  str(exc),
                 }
-        # Simulated
+        # Simulated (no active token)
         return {
             "name":   name, "type": item_type,
             "id":     str(uuid.uuid4()),
@@ -794,7 +834,9 @@ async def deploy(req: DeployRequest):
                        "payload": nb64, "payloadType": "InlineBase64"}],
         })
         artifacts.append(art)
-        nb_ids[layer] = art["id"]
+        # Only register notebooks that actually exist in Fabric
+        if art["status"] in ("created", "simulated"):
+            nb_ids[layer] = art["id"]
 
     # ── Data Pipeline ──────────────────────────────────────────────────────────
     if req.create_pipeline:
@@ -803,11 +845,11 @@ async def deploy(req: DeployRequest):
             if layer not in nb_ids:
                 continue
             act = {
-                "name":       f"Run_{layer}",
-                "type":       "TridentNotebook",
-                "dependsOn":  ([{"activity": prev,
-                                  "dependencyConditions": ["Succeeded"]}]
-                               if prev else []),
+                "name":      f"Run_{layer}",
+                "type":      "TridentNotebook",
+                "dependsOn": ([{"activity": prev,
+                                "dependencyConditions": ["Succeeded"]}]
+                              if prev else []),
                 "typeProperties": {
                     "notebookId":  nb_ids[layer],
                     "workspaceId": ws,
@@ -816,9 +858,11 @@ async def deploy(req: DeployRequest):
             activities.append(act)
             prev = act["name"]
 
-        pl_def = base64.b64encode(
-            json.dumps({"properties": {"activities": activities}}).encode()
-        ).decode()
+        pl_content = {
+            "name": f"{prefix}_Pipeline",
+            "properties": {"activities": activities},
+        }
+        pl_def = base64.b64encode(json.dumps(pl_content).encode()).decode()
         art = await _make(f"{prefix}_Pipeline", "DataPipeline", {
             "format": "json",
             "parts": [{"path": "pipeline-content.json",
