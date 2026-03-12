@@ -1050,6 +1050,14 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   const savedConns = connsData?.connections ?? [];
   const activeConn = savedConns.find(c => c.id === connsData?.active_id) ?? null;
 
+  // Auto-expand QuickConnectPanel when there are no saved connections
+  useEffect(() => {
+    if (connsData && savedConns.length === 0) {
+      setShowQuickConn(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connsData?.count]);
+
   // Auto-fill workspace_id from active connection when it has one
   useEffect(() => {
     if (activeConn?.workspace_id && !wizard.fabricWorkspace?.workspace_id) {
@@ -1178,7 +1186,7 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
       </div>
 
       {/* ── Active Fabric Connection banner ──────────────────────────────────── */}
-      <div className="card" style={{ padding: 18 }}>
+      <div id="fabric-auth-card" className="card" style={{ padding: 18 }}>
         <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10,
                      display: "flex", alignItems: "center", gap: 8 }}>
           <Wifi size={15} style={{ color: "var(--color-primary)" }} />
@@ -1526,11 +1534,19 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
         {/* ── Create + Verify connection ──────────────────────────────────── */}
         <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn-primary" disabled={creating} onClick={createConn}>
+            <button className="btn-primary" disabled={creating} onClick={createConn}
+              style={!activeConn ? { background: "#d97706", borderColor: "#d97706" } : {}}>
               {creating
                 ? <><RefreshCw size={13} className="spin" /> Creating…</>
                 : <><PlugZap size={13} /> Create Fabric Connection</>}
             </button>
+            {!activeConn && (
+              <span style={{ fontSize: 11, color: "#92400e", background: "#fef9c3",
+                             border: "1px solid #fde68a", borderRadius: 20,
+                             padding: "3px 10px", display: "flex", alignItems: "center", gap: 4 }}>
+                <AlertTriangle size={11} /> No token — will simulate
+              </span>
+            )}
 
             {/* Verify button — only shown after a connection ID exists */}
             {wizard.connectionId && (
@@ -1588,6 +1604,20 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
                   <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>
                     {connResult.note}
                   </div>
+                )}
+                {/* Action button for simulated (no live token) result */}
+                {!connResult.live && connResult.status !== "error" && (
+                  <button
+                    className="btn-outline"
+                    style={{ marginTop: 10, fontSize: 11, padding: "5px 12px",
+                             display: "flex", alignItems: "center", gap: 5,
+                             borderColor: "#d97706", color: "#92400e" }}
+                    onClick={() => {
+                      setShowQuickConn(true);
+                      document.getElementById("fabric-auth-card")?.scrollIntoView({ behavior: "smooth" });
+                    }}>
+                    <Key size={11} /> Add Fabric Token to enable live mode
+                  </button>
                 )}
               </div>
             </div>
