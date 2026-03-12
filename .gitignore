@@ -29,7 +29,11 @@ yarn-error.log*
 *.pyc
 *.pycache
 
-# IDE
+# Nested clone (accidentally cloned inside project root)
+iLinkERP-Fabric/
+
+# Claude / IDE tooling
+.claude/
 .vscode/
 .idea/
 *.suo
