@@ -162,6 +162,14 @@ function StepSource({ wizard, setWizard, onNext }) {
     enabled:  !!wizard.source,
   });
 
+  const { data: savedCfgs } = useQuery({
+    queryKey: ["erp-configs"],
+    queryFn:  () => axios.get(`${API}/api/erp/configs`).then(r => r.data),
+  });
+  const savedList = savedCfgs?.configs ?? [];
+
+  const [showSaved, setShowSaved] = useState(false);
+
   const sources  = data?.sources ?? [];
   const modules  = modulesData?.modules ?? [];
   const canNext  = !!wizard.source && !!wizard.module;
@@ -174,6 +182,52 @@ function StepSource({ wizard, setWizard, onNext }) {
           Choose your ERP system. Only supported systems can be connected — others are coming soon.
         </p>
       </div>
+
+      {/* Previously used ERP configs */}
+      {savedList.length > 0 && (
+        <div className="card" style={{ padding: 14 }}>
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 12, padding: "3px 8px", display: "flex", alignItems: "center", gap: 6 }}
+            onClick={() => setShowSaved(v => !v)}>
+            <Star size={12} style={{ color: "#d97706" }} />
+            Previously used ({savedList.length})
+            {showSaved ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {showSaved && (
+            <div className="fade-in" style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {savedList.map(cfg => (
+                <button
+                  key={cfg.name}
+                  onClick={() => setWizard(w => ({
+                    ...w,
+                    source:     cfg.source,
+                    sourceName: cfg.sourceName || cfg.source,
+                    module:     cfg.module,
+                    moduleName: cfg.moduleName || cfg.module,
+                    connFields: {
+                      host:     cfg.host     || "",
+                      port:     cfg.port     || "",
+                      service:  cfg.service  || "",
+                      username: cfg.username || "",
+                    },
+                  }))}
+                  style={{
+                    padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                    border: "1px solid #e2e8f0", background: "white", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 6,
+                    transition: "all 0.12s",
+                  }}>
+                  <Database size={11} style={{ color: "var(--color-primary)" }} />
+                  {cfg.sourceName || cfg.source}
+                  {cfg.moduleName && <span style={{ color: "#94a3b8" }}>· {cfg.moduleName}</span>}
+                  {cfg.host && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#64748b" }}>({cfg.host})</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ERP grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10 }}>
@@ -303,6 +357,23 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
         msg:       d.message ?? (d.success ? "Connection successful" : "Connection failed"),
         simulated: d.simulated ?? false,
       });
+      if (d.success) {
+        // Auto-save config (no password)
+        try {
+          await axios.post(`${API}/api/erp/configure`, {
+            name:       `${wizard.source}_${wizard.connFields.host ?? "conn"}`,
+            source:     wizard.source,
+            sourceName: wizard.sourceName,
+            module:     wizard.module,
+            moduleName: wizard.moduleName,
+            host:       wizard.connFields.host     ?? "",
+            port:       wizard.connFields.port     ?? "",
+            service:    wizard.connFields.service  ?? wizard.connFields.database ?? "",
+            username:   wizard.connFields.username ?? "",
+            // password intentionally omitted
+          });
+        } catch (_) { /* non-fatal */ }
+      }
     } catch (err) {
       setResult({
         ok:  false,
@@ -383,7 +454,7 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
         fontSize: 12, color: "#1d4ed8",
       }}>
         <Info size={14} style={{ flexShrink: 0 }} />
-        Credentials are used for this session only and are never persisted to disk.
+        Connection details (except password) are saved for quick reuse. Passwords are never stored.
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -1028,7 +1099,8 @@ function QuickConnectPanel({ onSaved }) {
 
 function StepFabric({ wizard, setWizard, onNext, onBack }) {
   const qc = useQueryClient();
-  const [showParams,   setShowParams]   = useState(false);
+  const [showParams,     setShowParams]     = useState(false);
+  const [showSavedConns, setShowSavedConns] = useState(false);
   const [connParams,   setConnParams]   = useState({});
   const [creds,        setCreds]        = useState({ username: "", password: "", client_secret: "" });
   const [creating,     setCreating]     = useState(false);
@@ -1049,6 +1121,14 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   });
   const savedConns = connsData?.connections ?? [];
   const activeConn = savedConns.find(c => c.id === connsData?.active_id) ?? null;
+
+  // ── Previously saved ERP→Fabric connections ──────────────────────────────
+  const { data: savedConnData } = useQuery({
+    queryKey: ["saved-connections"],
+    queryFn:  () => axios.get(`${API}/api/fabric/saved-connections`).then(r => r.data),
+    refetchOnWindowFocus: false,
+  });
+  const savedConnList = savedConnData?.connections ?? [];
 
   // Auto-expand QuickConnectPanel when there are no saved connections
   useEffect(() => {
@@ -1295,6 +1375,59 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
           </div>
         )}
       </div>
+
+      {/* ── Previously saved ERP→Fabric connections ──────────────────────────── */}
+      {savedConnList.length > 0 && (
+        <div className="card" style={{ padding: 16 }}>
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 12, padding: "3px 8px", display: "flex", alignItems: "center", gap: 6 }}
+            onClick={() => setShowSavedConns(v => !v)}>
+            <Star size={12} style={{ color: "#d97706" }} />
+            Previously saved connections ({savedConnList.length})
+            {showSavedConns ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {showSavedConns && (
+            <div className="fade-in" style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+              {savedConnList.map(sc => (
+                <button
+                  key={sc.id}
+                  onClick={() => {
+                    setWizard(w => ({
+                      ...w,
+                      fabricWorkspace: {
+                        ...w.fabricWorkspace,
+                        workspace_id: sc.workspace_id || w.fabricWorkspace?.workspace_id || "",
+                        lakehouse_id: sc.lakehouse_id || w.fabricWorkspace?.lakehouse_id || "",
+                      },
+                      connectionId:   sc.id,
+                      connectionName: sc.display_name,
+                    }));
+                    toast(`Loaded: ${sc.display_name}`, { icon: "✓" });
+                    setShowSavedConns(false);
+                  }}
+                  style={{
+                    padding: "8px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                    border: "1px solid #e2e8f0", background: "white", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 8, textAlign: "left",
+                    transition: "all 0.12s",
+                  }}>
+                  {sc.live
+                    ? <CheckCircle2 size={12} style={{ color: "#16a34a", flexShrink: 0 }} />
+                    : <Database     size={12} style={{ color: "#64748b", flexShrink: 0 }} />}
+                  <span style={{ flex: 1 }}>{sc.display_name}</span>
+                  <span style={{ fontSize: 10, fontFamily: "monospace", color: "#94a3b8" }}>
+                    {sc.connection_type}
+                  </span>
+                  {sc.live
+                    ? <span className="badge badge-green" style={{ fontSize: 9 }}>live</span>
+                    : <span className="badge badge-gray"  style={{ fontSize: 9 }}>local</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Connection Types ─────────────────────────────────────────────────── */}
       <div className="card" style={{ padding: 20 }}>
@@ -1564,64 +1697,59 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
           </div>
 
           {/* Connection creation result */}
-          {connResult && (
-            <div style={{
-              display: "flex", alignItems: "flex-start", gap: 9,
-              padding: "10px 14px", borderRadius: 10,
-              background: connResult.status === "error" ? "#fef2f2"
-                        : connResult.live              ? "#f0fdf4"
-                        :                                "#fffbeb",
-              border: `1px solid ${
-                connResult.status === "error" ? "#fecaca"
-              : connResult.live              ? "#bbf7d0"
-              :                                "#fde68a"}`,
-            }}>
-              {connResult.status === "error"
-                ? <XCircle size={15} style={{ color: "#dc2626", flexShrink: 0, marginTop: 1 }} />
-                : connResult.live
-                  ? <CheckCircle2 size={15} style={{ color: "#16a34a", flexShrink: 0, marginTop: 1 }} />
-                  : <AlertTriangle size={15} style={{ color: "#d97706", flexShrink: 0, marginTop: 1 }} />}
-              <div>
-                <div style={{
-                  fontSize: 13, fontWeight: 600,
-                  color: connResult.status === "error" ? "#b91c1c"
-                       : connResult.live              ? "#15803d"
-                       :                                "#92400e",
-                }}>
-                  {connResult.status === "error"
-                    ? `Error: ${connResult.note}`
-                    : connResult.live
-                      ? `Connection created in Fabric`
-                      : "Connection simulated (no live token)"}
+          {connResult && (() => {
+            const isError   = connResult.status === "error";
+            const isLive    = connResult.live === true;
+            const isStored  = connResult.stored === true && !isLive;
+            const isSimOnly = !isLive && !isStored && !isError;
+            const bg      = isError ? "#fef2f2" : isLive ? "#f0fdf4" : isStored ? "#eff6ff" : "#fffbeb";
+            const border_ = isError ? "#fecaca" : isLive ? "#bbf7d0" : isStored ? "#bfdbfe" : "#fde68a";
+            const textClr = isError ? "#b91c1c" : isLive ? "#15803d" : isStored ? "#1d4ed8" : "#92400e";
+            const label   = isError   ? `Error: ${connResult.note}`
+                          : isLive    ? "✓ Fabric managed connection created"
+                          : isStored  ? "✓ Connection stored locally — JDBC at runtime"
+                          :             "Connection simulated (no live token)";
+            const Icon = isError ? XCircle : (isLive || isStored) ? CheckCircle2 : AlertTriangle;
+            const iconClr = isError ? "#dc2626" : isLive ? "#16a34a" : isStored ? "#2563eb" : "#d97706";
+            return (
+              <div style={{
+                display: "flex", alignItems: "flex-start", gap: 9,
+                padding: "10px 14px", borderRadius: 10,
+                background: bg, border: `1px solid ${border_}`,
+              }}>
+                <Icon size={15} style={{ color: iconClr, flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: textClr }}>
+                    {label}
+                  </div>
+                  {connResult.connection_id && (
+                    <div style={{ fontSize: 11, fontFamily: "monospace", color: "#64748b", marginTop: 3 }}>
+                      ID: {connResult.connection_id}
+                    </div>
+                  )}
+                  {connResult.note && !isError && (
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>
+                      {connResult.note}
+                    </div>
+                  )}
+                  {/* Action button — only for fully simulated (no JDBC details) */}
+                  {isSimOnly && (
+                    <button
+                      className="btn-outline"
+                      style={{ marginTop: 10, fontSize: 11, padding: "5px 12px",
+                               display: "flex", alignItems: "center", gap: 5,
+                               borderColor: "#d97706", color: "#92400e" }}
+                      onClick={() => {
+                        setShowQuickConn(true);
+                        document.getElementById("fabric-auth-card")?.scrollIntoView({ behavior: "smooth" });
+                      }}>
+                      <Key size={11} /> Add Fabric Token to enable live mode
+                    </button>
+                  )}
                 </div>
-                {connResult.connection_id && (
-                  <div style={{ fontSize: 11, fontFamily: "monospace", color: "#64748b",
-                                marginTop: 3 }}>
-                    ID: {connResult.connection_id}
-                  </div>
-                )}
-                {connResult.note && connResult.status !== "error" && (
-                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>
-                    {connResult.note}
-                  </div>
-                )}
-                {/* Action button for simulated (no live token) result */}
-                {!connResult.live && connResult.status !== "error" && (
-                  <button
-                    className="btn-outline"
-                    style={{ marginTop: 10, fontSize: 11, padding: "5px 12px",
-                             display: "flex", alignItems: "center", gap: 5,
-                             borderColor: "#d97706", color: "#92400e" }}
-                    onClick={() => {
-                      setShowQuickConn(true);
-                      document.getElementById("fabric-auth-card")?.scrollIntoView({ behavior: "smooth" });
-                    }}>
-                    <Key size={11} /> Add Fabric Token to enable live mode
-                  </button>
-                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Verify result */}
           {verifyResult && (
@@ -1697,6 +1825,13 @@ function StepDeploy({ wizard, onBack }) {
   const [sqlExpandedTable, setSqlExpandedTable] = useState(null);
   const [sqlActiveLayer,   setSqlActiveLayer]   = useState("bronze");
 
+  // Industry-standard SQL templates fetched from backend
+  const [standardSql,    setStandardSql]    = useState({ silver: {}, gold: {} });
+  const [standardLoaded, setStandardLoaded] = useState(false);
+
+  // Per-table kernel type overrides
+  const [tableKernelTypes, setTableKernelTypes] = useState({});
+
   // Error expansion in results table
   const [expandedErrors, setExpandedErrors] = useState(new Set());
 
@@ -1717,6 +1852,34 @@ function StepDeploy({ wizard, onBack }) {
   );
   const custom_pipeline_json = customCode.pipeline?.trim() ?? "";
 
+  // ── Fetch industry-standard SQL templates on source/module change ─────────
+  useEffect(() => {
+    if (!wizard.source || !wizard.module) return;
+    axios.get(`${API}/api/fabric/standard-sql?source_type=${wizard.source}&module=${wizard.module}`)
+      .then(r => {
+        if (r.data.has_standard) {
+          setStandardSql({ silver: r.data.silver ?? {}, gold: r.data.gold ?? {} });
+          // Pre-populate sqlConfig for tables that don't have custom SQL yet
+          setSqlConfig(prev => {
+            const next = { ...prev };
+            Object.entries(r.data.silver ?? {}).forEach(([tbl, sql]) => {
+              if (!next[tbl]?.silver) {
+                next[tbl] = { ...next[tbl], silver: sql };
+              }
+            });
+            Object.entries(r.data.gold ?? {}).forEach(([tbl, sql]) => {
+              if (!next[tbl]?.gold) {
+                next[tbl] = { ...next[tbl], gold: sql };
+              }
+            });
+            return next;
+          });
+          setStandardLoaded(true);
+        }
+      })
+      .catch(() => {});
+  }, [wizard.source, wizard.module]);
+
   // ── Deploy mutation ───────────────────────────────────────────────────────
   const deployMutation = useMutation({
     mutationFn: () =>
@@ -1736,6 +1899,7 @@ function StepDeploy({ wizard, onBack }) {
         silver_sql,
         gold_sql,
         notebook_types:       notebookTypes,
+        table_kernel_types:   tableKernelTypes,
         custom_notebook_code,
         custom_pipeline_json,
       }).then(r => r.data),
@@ -1775,7 +1939,8 @@ function StepDeploy({ wizard, onBack }) {
         custom_sql,
         silver_sql,
         gold_sql,
-        notebook_types:  notebookTypes,
+        notebook_types:     notebookTypes,
+        table_kernel_types: tableKernelTypes,
       });
       const layers = resp.data.layers ?? {};
       setCodePreview(layers);
@@ -1851,7 +2016,18 @@ function StepDeploy({ wizard, onBack }) {
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* ── Header ── */}
       <div>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Deploy to Microsoft Fabric</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Deploy to Microsoft Fabric</h2>
+          {standardLoaded && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
+              background: "#f0fdf4", color: "#15803d", border: "1px solid #bbf7d0",
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <CheckCircle2 size={10} /> Standard SQL loaded
+            </span>
+          )}
+        </div>
         <p style={{ fontSize: 13, color: "var(--color-muted)", margin: 0 }}>
           Create Fabric notebooks and pipeline for <strong>{wizard.sourceName}</strong> · {wizard.moduleName}.
         </p>
@@ -1989,27 +2165,54 @@ function StepDeploy({ wizard, onBack }) {
                     {/* Expanded SQL editor */}
                     {sqlExpandedTable === t && (
                       <div style={{ borderTop: "1px solid #e2e8f0", padding: 14 }}>
-                        {/* Layer tabs */}
-                        <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
-                          {["bronze", "silver", "gold"].map(layer => {
-                            const hasVal = sqlConfig[t]?.[layer]?.trim();
-                            return (
-                              <button key={layer}
-                                onClick={() => setSqlActiveLayer(layer)}
+                        {/* Layer tabs + per-table kernel toggle */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            {["bronze", "silver", "gold"].map(layer => {
+                              const hasVal = sqlConfig[t]?.[layer]?.trim();
+                              return (
+                                <button key={layer}
+                                  onClick={() => setSqlActiveLayer(layer)}
+                                  style={{
+                                    padding: "4px 12px", fontSize: 11, fontWeight: 600,
+                                    borderRadius: 6, cursor: "pointer", border: "1px solid",
+                                    display: "flex", alignItems: "center", gap: 4,
+                                    background:  sqlActiveLayer === layer ? layerBg[layer]    : "white",
+                                    color:       sqlActiveLayer === layer ? layerColor[layer] : "#64748b",
+                                    borderColor: sqlActiveLayer === layer ? layerColor[layer] : "#e2e8f0",
+                                  }}>
+                                  {layer.charAt(0).toUpperCase() + layer.slice(1)}
+                                  {hasVal && <span style={{ width: 6, height: 6, borderRadius: "50%",
+                                                            background: layerColor[layer], display: "inline-block" }} />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {/* Per-table kernel toggle */}
+                          <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
+                            <span style={{ fontSize: 11, color: "var(--color-muted)" }}>Kernel:</span>
+                            {["pyspark", "sql"].map(k => (
+                              <button
+                                key={k}
+                                onClick={() => setTableKernelTypes(prev => ({
+                                  ...prev,
+                                  [t]: prev[t] === k ? undefined : k
+                                }))}
                                 style={{
-                                  padding: "4px 12px", fontSize: 11, fontWeight: 600,
-                                  borderRadius: 6, cursor: "pointer", border: "1px solid",
-                                  display: "flex", alignItems: "center", gap: 4,
-                                  background:  sqlActiveLayer === layer ? layerBg[layer]    : "white",
-                                  color:       sqlActiveLayer === layer ? layerColor[layer] : "#64748b",
-                                  borderColor: sqlActiveLayer === layer ? layerColor[layer] : "#e2e8f0",
-                                }}>
-                                {layer.charAt(0).toUpperCase() + layer.slice(1)}
-                                {hasVal && <span style={{ width: 6, height: 6, borderRadius: "50%",
-                                                          background: layerColor[layer], display: "inline-block" }} />}
+                                  fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 6,
+                                  border: `1px solid ${(tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary)" : "#e2e8f0"}`,
+                                  background: (tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary-light)" : "white",
+                                  color:      (tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary)" : "#64748b",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {k === "pyspark" ? "PySpark" : "SparkSQL"}
                               </button>
-                            );
-                          })}
+                            ))}
+                            {tableKernelTypes[t] && (
+                              <span style={{ fontSize: 10, color: "var(--color-muted)" }}>(overrides layer default)</span>
+                            )}
+                          </div>
                         </div>
                         <textarea
                           placeholder={sqlPlaceholder(t, sqlActiveLayer)}
@@ -2034,16 +2237,30 @@ function StepDeploy({ wizard, onBack }) {
                               ? "Custom transform SQL reading from bronze layer"
                               : "Aggregation / KPI SQL reading from silver layer"}
                           </span>
-                          {sqlConfig[t]?.[sqlActiveLayer]?.trim() && (
-                            <button
-                              onClick={() => setSqlConfig(prev => ({
-                                ...prev, [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: "" },
-                              }))}
-                              style={{ fontSize: 11, color: "#b91c1c", background: "none",
-                                       border: "none", cursor: "pointer", padding: 0 }}>
-                              Clear
-                            </button>
-                          )}
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            {/* Reset to standard button */}
+                            {standardSql[sqlActiveLayer]?.[t] && sqlConfig[t]?.[sqlActiveLayer] !== standardSql[sqlActiveLayer][t] && (
+                              <button
+                                onClick={() => setSqlConfig(prev => ({
+                                  ...prev,
+                                  [t]: { ...prev[t], [sqlActiveLayer]: standardSql[sqlActiveLayer][t] }
+                                }))}
+                                style={{ fontSize: 11, color: "#6366f1", cursor: "pointer", background: "none", border: "none", padding: 0 }}
+                              >
+                                ↺ Reset to standard
+                              </button>
+                            )}
+                            {sqlConfig[t]?.[sqlActiveLayer]?.trim() && (
+                              <button
+                                onClick={() => setSqlConfig(prev => ({
+                                  ...prev, [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: "" },
+                                }))}
+                                style={{ fontSize: 11, color: "#b91c1c", background: "none",
+                                         border: "none", cursor: "pointer", padding: 0 }}>
+                                Clear
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -2390,6 +2607,9 @@ function StepDeploy({ wizard, onBack }) {
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
+const _WIZARD_KEY    = "ilink_wizard_state";
+const _WIZARD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 export default function ERPSource() {
   const [step,   setStep]   = useState(1);
   const [wizard, setWizard] = useState({
@@ -2405,11 +2625,86 @@ export default function ERPSource() {
     connectionName:   "",
   });
 
-  const next = () => setStep(s => Math.min(s + 1, STEPS.length));
+  // ── Resume banner ────────────────────────────────────────────────────────
+  const [resumeState, setResumeState] = useState(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(_WIZARD_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!saved?.savedAt) return;
+      const age = Date.now() - new Date(saved.savedAt).getTime();
+      if (age > _WIZARD_TTL_MS) { localStorage.removeItem(_WIZARD_KEY); return; }
+      if (saved.source) setResumeState(saved);
+    } catch {}
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const acceptResume = () => {
+    if (!resumeState) return;
+    setWizard(w => ({
+      ...w,
+      source:          resumeState.source          ?? w.source,
+      sourceName:      resumeState.sourceName      ?? w.sourceName,
+      module:          resumeState.module          ?? w.module,
+      moduleName:      resumeState.moduleName      ?? w.moduleName,
+      fabricWorkspace: resumeState.fabricWorkspace ?? w.fabricWorkspace,
+      connectionId:    resumeState.connectionId    ?? w.connectionId,
+      connectionName:  resumeState.connectionName  ?? w.connectionName,
+    }));
+    setResumeState(null);
+  };
+
+  const dismissResume = () => {
+    localStorage.removeItem(_WIZARD_KEY);
+    setResumeState(null);
+  };
+
+  const _saveWizardState = (w) => {
+    try {
+      localStorage.setItem(_WIZARD_KEY, JSON.stringify({
+        source:          w.source,
+        sourceName:      w.sourceName,
+        module:          w.module,
+        moduleName:      w.moduleName,
+        fabricWorkspace: w.fabricWorkspace,
+        connectionId:    w.connectionId,
+        connectionName:  w.connectionName,
+        savedAt:         new Date().toISOString(),
+      }));
+    } catch {}
+  };
+
+  const next = () => { _saveWizardState(wizard); setStep(s => Math.min(s + 1, STEPS.length)); };
   const back = () => setStep(s => Math.max(s - 1, 1));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* Resume last session banner */}
+      {resumeState && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "10px 16px", borderRadius: 10,
+          background: "#eff6ff", border: "1px solid #bfdbfe",
+          fontSize: 13,
+        }}>
+          <Info size={15} style={{ color: "#2563eb", flexShrink: 0 }} />
+          <span style={{ flex: 1, color: "#1e40af" }}>
+            Resume last session?{" "}
+            <strong>{resumeState.sourceName}</strong>
+            {resumeState.moduleName && <> · <strong>{resumeState.moduleName}</strong></>}
+          </span>
+          <button className="btn-primary" style={{ fontSize: 12, padding: "4px 14px" }}
+                  onClick={acceptResume}>
+            Yes, resume
+          </button>
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 12px" }}
+                  onClick={dismissResume}>
+            No thanks
+          </button>
+        </div>
+      )}
+
       {/* Page header */}
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 8 }}>
         <div style={{

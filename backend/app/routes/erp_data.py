@@ -1,6 +1,9 @@
 """ERP Sources, Modules, and Data Dictionary tables."""
 from __future__ import annotations
 import asyncio
+import json
+from datetime import datetime
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 import httpx
 
@@ -615,3 +618,45 @@ async def scan_tables(body: dict):
                     "All industry-standard module tables are assumed present. "
                     "Tables will be verified when the Bronze notebook runs."),
     }
+
+
+# ── ERP Config Persistence ─────────────────────────────────────────────────────
+_ERP_CONFIG_FILE = Path(__file__).parent.parent.parent / "erp_configs.json"
+_erp_configs: dict = {}  # {name: {name, source, module, conn_fields_sans_password}}
+
+# Load on startup
+try:
+    if _ERP_CONFIG_FILE.exists():
+        _erp_configs = json.loads(_ERP_CONFIG_FILE.read_text(encoding="utf-8"))
+except Exception:
+    pass
+
+
+@router.post("/configure")
+async def save_erp_config(body: dict):
+    """Save ERP connection config (without password) for quick reuse."""
+    name = body.get("name") or f"{body.get('source', '')}_{body.get('host', '')}"
+    _erp_configs[name] = {
+        "name":       name,
+        "source":     body.get("source", ""),
+        "sourceName": body.get("sourceName", ""),
+        "module":     body.get("module", ""),
+        "moduleName": body.get("moduleName", ""),
+        "host":       body.get("host", ""),
+        "port":       body.get("port", ""),
+        "service":    body.get("service", ""),
+        "username":   body.get("username", ""),
+        # Never save password
+        "saved_at":   datetime.utcnow().isoformat(),
+    }
+    try:
+        _ERP_CONFIG_FILE.write_text(json.dumps(_erp_configs, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return {"status": "saved", "name": name}
+
+
+@router.get("/configs")
+async def list_erp_configs():
+    """Return saved ERP connection configs."""
+    return {"configs": list(_erp_configs.values()), "total": len(_erp_configs)}

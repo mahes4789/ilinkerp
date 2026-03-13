@@ -2,13 +2,14 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
 import {
   LayoutDashboard, PlugZap, Settings,
-  ChevronLeft, ChevronRight, Zap,
+  ChevronLeft, ChevronRight, Zap, Globe,
 } from "lucide-react";
 
 const NAV_ITEMS = [
-  { to: "/",           Icon: LayoutDashboard, label: "Dashboard"          },
-  { to: "/erp-source", Icon: PlugZap,         label: "ERP Source Wizard"  },
-  { to: "/settings",   Icon: Settings,        label: "Settings"           },
+  { to: "/",               Icon: LayoutDashboard, label: "Dashboard"          },
+  { to: "/erp-source",     Icon: PlugZap,         label: "ERP Source Wizard"  },
+  { to: "/erp-comparison", Icon: Globe,           label: "ERP Comparison"     },
+  { to: "/settings",       Icon: Settings,        label: "Settings"           },
 ];
 
 export default function Sidebar() {

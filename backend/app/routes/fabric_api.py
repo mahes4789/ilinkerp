@@ -120,6 +120,28 @@ class _ConnectionStore:
 
 _conn_store = _ConnectionStore()
 
+# ── Local ERP→Fabric Connection Persistence ────────────────────────────────────
+_LOCAL_CONN_FILE = Path(__file__).parent.parent.parent / "local_connections.json"
+
+
+def _load_local_conns() -> dict:
+    try:
+        if _LOCAL_CONN_FILE.exists():
+            return json.loads(_LOCAL_CONN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_local_conns(data: dict) -> None:
+    try:
+        _LOCAL_CONN_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+_local_conns: dict = _load_local_conns()
+
 # ── ERP → Fabric Connection Types ─────────────────────────────────────────────
 ERP_FABRIC_CONNECTION_TYPES: dict[str, list[dict]] = {
     "oracle_ebs": [
@@ -324,6 +346,32 @@ def _get_token() -> str:
     return token
 
 
+async def _get_sp_token_from_inst() -> str | None:
+    """Try a client-credentials grant using service principal creds from any stored Fabric connection."""
+    for inst in _local_conns.values():
+        tid = inst.get("tenant_id") or ""
+        cid = inst.get("client_id") or ""
+        sec = inst.get("client_secret") or ""
+        if not (tid and cid and sec):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token",
+                    data={
+                        "grant_type":    "client_credentials",
+                        "client_id":     cid,
+                        "client_secret": sec,
+                        "scope":         "https://api.fabric.microsoft.com/.default",
+                    },
+                )
+            if r.status_code == 200:
+                return r.json().get("access_token")
+        except Exception:
+            continue
+    return None
+
+
 async def _fabric_get(token: str, url: str) -> dict:
     """GET to Fabric REST API — raises HTTPException on non-200."""
     async with httpx.AsyncClient(timeout=20) as client:
@@ -471,6 +519,319 @@ def _code_to_cells(code: str) -> list[str]:
     return [c.strip() for c in code.split(_CELL_SEP.strip()) if c.strip()]
 
 
+# ── Industry-standard Silver/Gold SQL per ERP source + module ─────────────────
+# Silver SQL = dimension/fact table SELECT from bronze layer with cleansing
+# Gold SQL   = aggregation/KPI SELECT from silver layer
+STANDARD_SQL: dict[str, dict[str, dict[str, dict[str, str]]]] = {
+    # structure: { source_type: { module: { "silver"|"gold": { table_name: sql } } } }
+    "oracle_fusion": {
+        "GL": {
+            "silver": {
+                "GL_LEDGERS": (
+                    "SELECT LEDGER_ID, NAME AS ledger_name, CURRENCY_CODE, "
+                    "LEDGER_CATEGORY_CODE, PERIOD_SET_NAME, CHART_OF_ACCOUNTS_ID, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_LEDGERS WHERE LEDGER_CATEGORY_CODE IN ('PRIMARY','SECONDARY')"
+                ),
+                "GL_CODE_COMBINATIONS": (
+                    "SELECT CODE_COMBINATION_ID, "
+                    "CONCAT_WS('.', SEGMENT1, SEGMENT2, SEGMENT3, SEGMENT4) AS account_code, "
+                    "ACCOUNT_TYPE, ENABLED_FLAG, SUMMARY_FLAG, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_CODE_COMBINATIONS WHERE ENABLED_FLAG = 'Y'"
+                ),
+                "GL_JE_HEADERS": (
+                    "SELECT JE_HEADER_ID, LEDGER_ID, JE_CATEGORY, JE_SOURCE, "
+                    "PERIOD_NAME, STATUS, POSTED_DATE, RUNNING_TOTAL_DR, RUNNING_TOTAL_CR, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_JE_HEADERS WHERE STATUS = 'P'"
+                ),
+                "GL_JE_LINES": (
+                    "SELECT JL.JE_HEADER_ID, JL.JE_LINE_NUM, JL.CODE_COMBINATION_ID, "
+                    "JL.PERIOD_NAME, JL.ENTERED_DR, JL.ENTERED_CR, "
+                    "JL.ACCOUNTED_DR, JL.ACCOUNTED_CR, JL.DESCRIPTION, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_JE_LINES JL "
+                    "JOIN silver.GL_JE_HEADERS JH ON JL.JE_HEADER_ID = JH.JE_HEADER_ID"
+                ),
+                "GL_BALANCES": (
+                    "SELECT LEDGER_ID, CODE_COMBINATION_ID, PERIOD_NAME, PERIOD_TYPE, "
+                    "PERIOD_YEAR, PERIOD_NUM, CURRENCY_CODE, "
+                    "COALESCE(PERIOD_NET_DR, 0) AS period_net_dr, "
+                    "COALESCE(PERIOD_NET_CR, 0) AS period_net_cr, "
+                    "COALESCE(BEGIN_BALANCE_DR, 0) - COALESCE(BEGIN_BALANCE_CR, 0) AS begin_balance, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_BALANCES WHERE ACTUAL_FLAG = 'A'"
+                ),
+                "GL_PERIODS": (
+                    "SELECT PERIOD_SET_NAME, PERIOD_NAME, PERIOD_TYPE, "
+                    "PERIOD_YEAR, PERIOD_NUM, START_DATE, END_DATE, "
+                    "CLOSING_STATUS, CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_PERIODS"
+                ),
+            },
+            "gold": {
+                "GL_BALANCES": (
+                    "SELECT b.PERIOD_NAME, b.PERIOD_YEAR, "
+                    "cc.account_code, cc.ACCOUNT_TYPE, b.CURRENCY_CODE, "
+                    "SUM(b.period_net_dr - b.period_net_cr) AS net_period_movement, "
+                    "SUM(b.begin_balance) AS opening_balance, "
+                    "SUM(b.begin_balance + b.period_net_dr - b.period_net_cr) AS closing_balance, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.GL_BALANCES b "
+                    "JOIN silver.GL_CODE_COMBINATIONS cc ON b.CODE_COMBINATION_ID = cc.CODE_COMBINATION_ID "
+                    "GROUP BY b.PERIOD_NAME, b.PERIOD_YEAR, cc.account_code, cc.ACCOUNT_TYPE, b.CURRENCY_CODE"
+                ),
+                "GL_JE_LINES": (
+                    "SELECT jh.JE_CATEGORY, jh.JE_SOURCE, jh.PERIOD_NAME, "
+                    "cc.account_code, cc.ACCOUNT_TYPE, "
+                    "SUM(jl.ACCOUNTED_DR) AS total_dr, SUM(jl.ACCOUNTED_CR) AS total_cr, "
+                    "SUM(jl.ACCOUNTED_DR - jl.ACCOUNTED_CR) AS net_amount, COUNT(*) AS line_count, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.GL_JE_LINES jl "
+                    "JOIN silver.GL_JE_HEADERS jh ON jl.JE_HEADER_ID = jh.JE_HEADER_ID "
+                    "JOIN silver.GL_CODE_COMBINATIONS cc ON jl.CODE_COMBINATION_ID = cc.CODE_COMBINATION_ID "
+                    "GROUP BY jh.JE_CATEGORY, jh.JE_SOURCE, jh.PERIOD_NAME, cc.account_code, cc.ACCOUNT_TYPE"
+                ),
+            },
+        },
+        "AR": {
+            "silver": {
+                "HZ_PARTIES": (
+                    "SELECT PARTY_ID, PARTY_NUMBER, PARTY_NAME, PARTY_TYPE, "
+                    "STATUS, EMAIL_ADDRESS, PHONE_COUNTRY_CODE, PHONE_NUMBER, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.HZ_PARTIES WHERE STATUS = 'A' AND PARTY_TYPE = 'ORGANIZATION'"
+                ),
+                "HZ_CUST_ACCOUNTS": (
+                    "SELECT CUST_ACCOUNT_ID, PARTY_ID, ACCOUNT_NUMBER, ACCOUNT_NAME, "
+                    "STATUS, CREDIT_LIMIT, CURRENCY_CODE, CUSTOMER_TYPE, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.HZ_CUST_ACCOUNTS WHERE STATUS = 'A'"
+                ),
+                "RA_CUSTOMER_TRX_ALL": (
+                    "SELECT CUSTOMER_TRX_ID, TRX_NUMBER, TRX_DATE, BILL_TO_CUSTOMER_ID, "
+                    "INVOICE_CURRENCY_CODE, COMPLETE_FLAG, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.RA_CUSTOMER_TRX_ALL WHERE COMPLETE_FLAG = 'Y'"
+                ),
+                "AR_PAYMENT_SCHEDULES_ALL": (
+                    "SELECT PAYMENT_SCHEDULE_ID, CUSTOMER_TRX_ID, CUSTOMER_ID, "
+                    "DUE_DATE, AMOUNT_DUE_ORIGINAL, AMOUNT_DUE_REMAINING, "
+                    "STATUS, CLASS, INVOICE_CURRENCY_CODE, "
+                    "DATEDIFF(CURRENT_DATE, DUE_DATE) AS days_overdue, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AR_PAYMENT_SCHEDULES_ALL WHERE STATUS != 'CL'"
+                ),
+                "AR_CASH_RECEIPTS_ALL": (
+                    "SELECT CASH_RECEIPT_ID, RECEIPT_NUMBER, RECEIPT_DATE, "
+                    "CUSTOMER_ID, AMOUNT, CURRENCY_CODE, STATUS, PAY_FROM_CUSTOMER, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AR_CASH_RECEIPTS_ALL WHERE STATUS != 'REV'"
+                ),
+            },
+            "gold": {
+                "AR_PAYMENT_SCHEDULES_ALL": (
+                    "SELECT "
+                    "CASE WHEN days_overdue <= 0 THEN 'Current' "
+                    "     WHEN days_overdue <= 30 THEN '1-30 days' "
+                    "     WHEN days_overdue <= 60 THEN '31-60 days' "
+                    "     WHEN days_overdue <= 90 THEN '61-90 days' "
+                    "     ELSE '90+ days' END AS aging_bucket, "
+                    "COUNT(*) AS invoice_count, "
+                    "SUM(AMOUNT_DUE_REMAINING) AS outstanding_amount, "
+                    "INVOICE_CURRENCY_CODE, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.AR_PAYMENT_SCHEDULES_ALL "
+                    "GROUP BY aging_bucket, INVOICE_CURRENCY_CODE"
+                ),
+            },
+        },
+        "AP": {
+            "silver": {
+                "AP_SUPPLIERS": (
+                    "SELECT VENDOR_ID, VENDOR_NAME, VENDOR_TYPE_LOOKUP_CODE, "
+                    "ENABLED_FLAG, INVOICE_CURRENCY_CODE, PAYMENT_CURRENCY_CODE, "
+                    "PAY_GROUP_LOOKUP_CODE, CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AP_SUPPLIERS WHERE ENABLED_FLAG = 'Y'"
+                ),
+                "AP_INVOICES_ALL": (
+                    "SELECT INVOICE_ID, INVOICE_NUM, INVOICE_DATE, VENDOR_ID, "
+                    "INVOICE_AMOUNT, AMOUNT_PAID, AMOUNT_APPLICABLE_TO_DISCOUNT, "
+                    "PAYMENT_STATUS_FLAG, APPROVAL_STATUS, INVOICE_TYPE_LOOKUP_CODE, "
+                    "INVOICE_CURRENCY_CODE, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AP_INVOICES_ALL WHERE CANCELLED_DATE IS NULL"
+                ),
+                "AP_PAYMENT_SCHEDULES_ALL": (
+                    "SELECT INVOICE_ID, PAYMENT_NUM, DUE_DATE, GROSS_AMOUNT, "
+                    "AMOUNT_REMAINING, DISCOUNT_DATE, DISCOUNT_AMOUNT_AVAILABLE, "
+                    "PAYMENT_STATUS_FLAG, DATEDIFF(CURRENT_DATE, DUE_DATE) AS days_overdue, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AP_PAYMENT_SCHEDULES_ALL WHERE PAYMENT_STATUS_FLAG != 'Y'"
+                ),
+            },
+            "gold": {
+                "AP_INVOICES_ALL": (
+                    "SELECT v.VENDOR_NAME, "
+                    "DATE_TRUNC('month', i.INVOICE_DATE) AS invoice_month, "
+                    "i.INVOICE_CURRENCY_CODE, "
+                    "COUNT(*) AS invoice_count, "
+                    "SUM(i.INVOICE_AMOUNT) AS total_invoice_amount, "
+                    "SUM(i.AMOUNT_PAID) AS total_paid, "
+                    "SUM(i.INVOICE_AMOUNT - i.AMOUNT_PAID) AS outstanding_payable, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.AP_INVOICES_ALL i "
+                    "JOIN silver.AP_SUPPLIERS v ON i.VENDOR_ID = v.VENDOR_ID "
+                    "GROUP BY v.VENDOR_NAME, invoice_month, i.INVOICE_CURRENCY_CODE"
+                ),
+            },
+        },
+    },
+    "oracle_ebs": {
+        "GL": {
+            "silver": {
+                "GL_CODE_COMBINATIONS": (
+                    "SELECT CODE_COMBINATION_ID, CHART_OF_ACCOUNTS_ID, "
+                    "CONCAT_WS('.', SEGMENT1, SEGMENT2, SEGMENT3) AS account_code, "
+                    "ACCOUNT_TYPE, ENABLED_FLAG, SUMMARY_FLAG, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_CODE_COMBINATIONS WHERE ENABLED_FLAG = 'Y'"
+                ),
+                "GL_BALANCES": (
+                    "SELECT LEDGER_ID, CODE_COMBINATION_ID, PERIOD_NAME, PERIOD_TYPE, "
+                    "PERIOD_YEAR, PERIOD_NUM, CURRENCY_CODE, ACTUAL_FLAG, "
+                    "COALESCE(PERIOD_NET_DR, 0) AS period_net_dr, "
+                    "COALESCE(PERIOD_NET_CR, 0) AS period_net_cr, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_BALANCES WHERE ACTUAL_FLAG = 'A'"
+                ),
+                "GL_JE_LINES": (
+                    "SELECT JL.JE_HEADER_ID, JL.JE_LINE_NUM, JL.CODE_COMBINATION_ID, "
+                    "JL.PERIOD_NAME, JL.ENTERED_DR, JL.ENTERED_CR, "
+                    "JL.ACCOUNTED_DR, JL.ACCOUNTED_CR, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GL_JE_LINES JL"
+                ),
+            },
+            "gold": {
+                "GL_BALANCES": (
+                    "SELECT b.PERIOD_NAME, b.PERIOD_YEAR, b.ACCOUNT_TYPE, b.CURRENCY_CODE, "
+                    "SUM(b.period_net_dr) AS total_dr, SUM(b.period_net_cr) AS total_cr, "
+                    "SUM(b.period_net_dr - b.period_net_cr) AS net_movement "
+                    "FROM silver.GL_BALANCES b GROUP BY 1,2,3,4"
+                ),
+            },
+        },
+        "AR": {
+            "silver": {
+                "RA_CUSTOMER_TRX_ALL": (
+                    "SELECT CUSTOMER_TRX_ID, TRX_NUMBER, TRX_DATE, "
+                    "BILL_TO_CUSTOMER_ID, INVOICE_CURRENCY_CODE, COMPLETE_FLAG, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.RA_CUSTOMER_TRX_ALL WHERE COMPLETE_FLAG = 'Y'"
+                ),
+                "AR_PAYMENT_SCHEDULES_ALL": (
+                    "SELECT PAYMENT_SCHEDULE_ID, CUSTOMER_TRX_ID, CUSTOMER_ID, "
+                    "DUE_DATE, AMOUNT_DUE_ORIGINAL, AMOUNT_DUE_REMAINING, "
+                    "STATUS, DATEDIFF(CURRENT_DATE, DUE_DATE) AS days_overdue, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.AR_PAYMENT_SCHEDULES_ALL WHERE STATUS != 'CL'"
+                ),
+            },
+            "gold": {
+                "AR_PAYMENT_SCHEDULES_ALL": (
+                    "SELECT CASE WHEN days_overdue <= 0 THEN 'Current' "
+                    "WHEN days_overdue <= 30 THEN '1-30 days' ELSE '30+ days' END AS bucket, "
+                    "SUM(AMOUNT_DUE_REMAINING) AS outstanding "
+                    "FROM silver.AR_PAYMENT_SCHEDULES_ALL GROUP BY bucket"
+                ),
+            },
+        },
+    },
+    "sap_s4hana": {
+        "FI": {
+            "silver": {
+                "ACDOCA": (
+                    "SELECT MANDT, RLDNR AS ledger, RBUKRS AS company_code, "
+                    "GJAHR AS fiscal_year, BELNR AS doc_number, DOCLN AS line_num, "
+                    "BLDAT AS doc_date, BUDAT AS posting_date, KTOSL AS account_key, "
+                    "HSLVT AS carry_fwd_amount, HSL AS local_amount, "
+                    "KWAER AS currency_code, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.ACDOCA WHERE RLDNR = '0L'"
+                ),
+                "SKA1": (
+                    "SELECT KTOPL AS chart_of_accounts, SAKNR AS gl_account, "
+                    "KTOKS AS account_group, XBILK AS balance_sheet_flag, "
+                    "XLOEV AS marked_deletion, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.SKA1 WHERE XLOEV != 'X'"
+                ),
+            },
+            "gold": {
+                "ACDOCA": (
+                    "SELECT gjahr AS fiscal_year, "
+                    "DATE_TRUNC('month', posting_date) AS posting_month, "
+                    "company_code, currency_code, "
+                    "SUM(CASE WHEN local_amount > 0 THEN local_amount ELSE 0 END) AS total_dr, "
+                    "SUM(CASE WHEN local_amount < 0 THEN ABS(local_amount) ELSE 0 END) AS total_cr, "
+                    "SUM(local_amount) AS net_amount, COUNT(*) AS posting_count, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.ACDOCA "
+                    "GROUP BY fiscal_year, posting_month, company_code, currency_code"
+                ),
+            },
+        },
+        "MM": {
+            "silver": {
+                "MARA": (
+                    "SELECT MATNR AS material_number, MTART AS material_type, "
+                    "MATKL AS material_group, MEINS AS base_uom, "
+                    "BRGEW AS gross_weight, NTGEW AS net_weight, "
+                    "ERSDA AS created_date, LAEDA AS last_changed, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.MARA WHERE LVORM != 'X'"
+                ),
+            },
+            "gold": {},
+        },
+    },
+    "dynamics_365_fo": {
+        "GL": {
+            "silver": {
+                "GENERALJOURNALACCOUNTENTRY": (
+                    "SELECT RECID, SUBLEDGERVOUCHERDATAPARTITION, "
+                    "ACCOUNTINGCURRENCYAMOUNT, REPORTINGCURRENCYAMOUNT, "
+                    "TRANSACTIONCURRENCYAMOUNT, TRANSACTIONCURRENCYCODE, "
+                    "LEDGERDIMENSION, POSTINGTYPE, ISREVERSAL, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.GENERALJOURNALACCOUNTENTRY"
+                ),
+                "MAINACCOUNT": (
+                    "SELECT RECID, MAINACCOUNTID, NAME, TYPE, "
+                    "CLOSINGTYPE, DBCRCORRECTION, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM bronze.MAINACCOUNT WHERE ISDELETED = 0"
+                ),
+            },
+            "gold": {
+                "GENERALJOURNALACCOUNTENTRY": (
+                    "SELECT m.MAINACCOUNTID, m.NAME AS account_name, m.TYPE AS account_type, "
+                    "DATE_TRUNC('month', e.TRANSACTIONDATE) AS posting_month, "
+                    "e.TRANSACTIONCURRENCYCODE, "
+                    "SUM(e.ACCOUNTINGCURRENCYAMOUNT) AS net_amount, COUNT(*) AS entry_count, "
+                    "CURRENT_TIMESTAMP AS etl_loaded_at "
+                    "FROM silver.GENERALJOURNALACCOUNTENTRY e "
+                    "JOIN silver.MAINACCOUNT m ON e.LEDGERDIMENSION = m.RECID "
+                    "GROUP BY m.MAINACCOUNTID, m.NAME, m.TYPE, posting_month, e.TRANSACTIONCURRENCYCODE"
+                ),
+            },
+        },
+    },
+}
+
+
 def _bronze_cells(
     source: str, module: str, tables: list[str],
     custom_sql: dict[str, str] | None = None,
@@ -547,9 +908,13 @@ def _silver_cells(
     silver_sql: optional dict of {table_name: SQL_query}.
       When provided, emits spark.sql(query) instead of the default
       dropDuplicates/na.fill cleansing loop for that table.
+      Falls back to STANDARD_SQL for that source+module if no custom SQL given.
     """
     if silver_sql is None:
         silver_sql = {}
+
+    # Fall back to STANDARD_SQL for tables without custom SQL
+    std_silver = STANDARD_SQL.get(source, {}).get(module, {}).get("silver", {})
 
     cells = [
         f"# Silver Layer — {source} {module} cleanse & conform\n"
@@ -559,10 +924,11 @@ def _silver_cells(
 
     if tables:
         for t in tables:
-            sql = silver_sql.get(t)
+            sql = silver_sql.get(t) or std_silver.get(t)
             if sql:
+                label = "custom SQL" if silver_sql.get(t) else "standard SQL"
                 cells.append(
-                    f"# Silver transform — {t} (custom SQL)\n"
+                    f"# Silver transform — {t} ({label})\n"
                     f"df_{t.lower()} = spark.sql(\"\"\"\n{sql}\n\"\"\")\n"
                     f"df_{t.lower()}.write.format('delta').mode('overwrite')"
                     f".option('overwriteSchema','true').saveAsTable('silver.{t.lower()}')\n"
@@ -602,10 +968,14 @@ def _gold_cells(
 
     gold_sql: optional dict of {table_name: SQL_query}.
       When provided, emits a spark.sql(query) aggregation cell writing
-      the result to gold.<table>. Otherwise emits a TODO stub cell.
+      the result to gold.<table>. Falls back to STANDARD_SQL for that
+      source+module, then emits a TODO stub if no SQL found.
     """
     if gold_sql is None:
         gold_sql = {}
+
+    # Fall back to STANDARD_SQL for tables without custom SQL
+    std_gold = STANDARD_SQL.get(source, {}).get(module, {}).get("gold", {})
 
     cells = [
         f"# Gold Layer — {source} {module} business KPIs\n"
@@ -613,13 +983,16 @@ def _gold_cells(
         "spark = SparkSession.builder.appName('Gold_Aggregation').getOrCreate()\n",
     ]
 
-    custom_tables = [t for t in (tables or []) if t in gold_sql]
-    stub_tables   = [t for t in (tables or []) if t not in gold_sql]
+    # Tables that have either custom or standard SQL
+    sql_tables  = [t for t in (tables or []) if gold_sql.get(t) or std_gold.get(t)]
+    stub_tables = [t for t in (tables or []) if not gold_sql.get(t) and not std_gold.get(t)]
 
-    for t in custom_tables:
+    for t in sql_tables:
+        sql   = gold_sql.get(t) or std_gold.get(t)
+        label = "custom SQL" if gold_sql.get(t) else "standard SQL"
         cells.append(
-            f"# Gold KPI — {t} (custom SQL)\n"
-            f"df_gold_{t.lower()} = spark.sql(\"\"\"\n{gold_sql[t]}\n\"\"\")\n"
+            f"# Gold KPI — {t} ({label})\n"
+            f"df_gold_{t.lower()} = spark.sql(\"\"\"\n{sql}\n\"\"\")\n"
             f"df_gold_{t.lower()}.write.format('delta').mode('overwrite')"
             f".option('overwriteSchema','true').saveAsTable('gold.{t.lower()}')\n"
             f"print('gold.{t.lower()} written')"
@@ -819,6 +1192,7 @@ class CreateConnectionRequest(BaseModel):
     password:          str = ""
     client_secret:     str = ""
     privacy_level:     str = "Organizational"
+    lakehouse_id:      str = ""
 
 
 @router.post("/create-connection")
@@ -874,9 +1248,23 @@ async def create_connection(req: CreateConnectionRequest):
 
         result         = await _fabric_post(token, f"{FABRIC_API}/connections", payload)
         fabric_conn_id = result.get("id", conn_id)
+        # Save locally so wizard can resume without re-entering details
+        _local_conns[fabric_conn_id] = {
+            "id":              fabric_conn_id,
+            "display_name":    req.display_name,
+            "source_type":     req.source_type,
+            "connection_type": req.connection_type,
+            "workspace_id":    req.workspace_id,
+            "lakehouse_id":    req.lakehouse_id,
+            "live":            True,
+            "stored":          True,
+            "stored_at":       datetime.utcnow().isoformat(),
+        }
+        _save_local_conns(_local_conns)
         return {
             "status":          "created",
             "live":            True,
+            "stored":          True,
             "connection_id":   fabric_conn_id,
             "display_name":    req.display_name,
             "connection_type": req.connection_type,
@@ -885,10 +1273,67 @@ async def create_connection(req: CreateConnectionRequest):
         }
 
     except HTTPException:
-        # Token not set → simulate so the UI wizard can still be demo'd
+        # Try service-principal auth before falling back to simulation
+        sp_token = await _get_sp_token_from_inst()
+        if sp_token:
+            try:
+                result         = await _fabric_post(sp_token, f"{FABRIC_API}/connections", payload)
+                fabric_conn_id = result.get("id", conn_id)
+                _local_conns[fabric_conn_id] = {
+                    "id":              fabric_conn_id,
+                    "display_name":    req.display_name,
+                    "source_type":     req.source_type,
+                    "connection_type": req.connection_type,
+                    "workspace_id":    req.workspace_id,
+                    "lakehouse_id":    req.lakehouse_id,
+                    "live":            True,
+                    "stored":          True,
+                    "stored_at":       datetime.utcnow().isoformat(),
+                }
+                _save_local_conns(_local_conns)
+                return {
+                    "status":          "created",
+                    "live":            True,
+                    "stored":          True,
+                    "connection_id":   fabric_conn_id,
+                    "display_name":    req.display_name,
+                    "connection_type": req.connection_type,
+                    "workspace_id":    req.workspace_id,
+                    "verify_url":      f"/api/fabric/connections/{fabric_conn_id}",
+                }
+            except Exception:
+                pass
+        # Save locally even when no live token
+        has_jdbc_details = bool(req.connection_fields)
+        _local_conns[conn_id] = {
+            "id":              conn_id,
+            "display_name":    req.display_name,
+            "source_type":     req.source_type,
+            "connection_type": req.connection_type,
+            "workspace_id":    req.workspace_id,
+            "lakehouse_id":    req.lakehouse_id,
+            "live":            False,
+            "stored":          True,
+            "stored_at":       datetime.utcnow().isoformat(),
+        }
+        _save_local_conns(_local_conns)
+        if has_jdbc_details:
+            return {
+                "status":          "stored",
+                "live":            False,
+                "stored":          True,
+                "simulated":       True,
+                "connection_id":   conn_id,
+                "display_name":    req.display_name,
+                "connection_type": req.connection_type,
+                "workspace_id":    req.workspace_id,
+                "note":            "Connection stored locally. Notebooks will connect via JDBC at runtime. "
+                                   "Sign in via Settings → MS365 to create a managed Fabric connection.",
+            }
         return {
             "status":          "simulated",
             "live":            False,
+            "stored":          True,
             "connection_id":   conn_id,
             "display_name":    req.display_name,
             "connection_type": req.connection_type,
@@ -896,6 +1341,26 @@ async def create_connection(req: CreateConnectionRequest):
             "note":            "MS365 token not active — connection simulated. "
                                "Set a token in Settings for live deployment.",
         }
+
+
+# ── Saved (local) ERP→Fabric connections ──────────────────────────────────────
+@router.get("/saved-connections")
+async def list_saved_connections():
+    """Return locally persisted ERP→Fabric connections."""
+    return {
+        "connections": list(_local_conns.values()),
+        "total":       len(_local_conns),
+    }
+
+
+@router.delete("/saved-connections/{conn_id}")
+async def delete_saved_connection(conn_id: str):
+    """Remove a locally persisted ERP→Fabric connection."""
+    if conn_id not in _local_conns:
+        raise HTTPException(404, f"Connection {conn_id} not found in local store")
+    del _local_conns[conn_id]
+    _save_local_conns(_local_conns)
+    return {"status": "deleted", "connection_id": conn_id}
 
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
@@ -917,6 +1382,8 @@ class DeployRequest(BaseModel):
     gold_sql:        dict[str, str] = {}   # Gold: aggregation/KPI queries
     # Notebook kernel per layer: "pyspark" (default) or "sql"
     notebook_types:  dict[str, str] = {}   # e.g. {"bronze": "sql", "silver": "pyspark"}
+    # Per-table kernel type override — overrides the layer default for specific tables
+    table_kernel_types: dict[str, str] = {}   # e.g. {"GL_BALANCES": "sql", "GL_JE_LINES": "pyspark"}
     # User-edited notebook code per layer — overrides auto-generated cells when set
     # Each value is cells joined by _CELL_SEP; empty = use auto-generated code
     custom_notebook_code: dict[str, str] = {}   # bronze/silver/gold → edited code string
@@ -951,15 +1418,21 @@ def _bronze_sql_cells(source: str, module: str, tables: list[str],
 
 def _silver_sql_cells(source: str, module: str, tables: list[str] | None = None,
                       silver_sql: dict[str, str] | None = None) -> list[str]:
-    """Generate SparkSQL cells for the Silver notebook (SQL kernel variant)."""
+    """Generate SparkSQL cells for the Silver notebook (SQL kernel variant).
+    Falls back to STANDARD_SQL for tables without custom SQL.
+    """
     if silver_sql is None:
         silver_sql = {}
+    # Fall back to STANDARD_SQL for tables without custom SQL
+    std_silver = STANDARD_SQL.get(source, {}).get(module, {}).get("silver", {})
     cells = [f"-- Silver Layer — {source} {module} cleanse & conform (SparkSQL)"]
     for t in (tables or []):
-        sql = silver_sql.get(t,
-            f"SELECT DISTINCT *\nFROM bronze.{t.lower()}\nWHERE 1=1 -- add filters here")
+        sql = silver_sql.get(t) or std_silver.get(t) or (
+            f"SELECT DISTINCT *\nFROM bronze.{t.lower()}\nWHERE 1=1 -- add filters here"
+        )
+        label = "custom SQL" if silver_sql.get(t) else ("standard SQL" if std_silver.get(t) else "default")
         cells.append(
-            f"-- Silver cleanse — {t}\n"
+            f"-- Silver cleanse — {t} ({label})\n"
             f"CREATE OR REPLACE TABLE silver.{t.lower()} USING delta AS\n"
             f"{sql};"
         )
@@ -975,18 +1448,24 @@ def _silver_sql_cells(source: str, module: str, tables: list[str] | None = None,
 
 def _gold_sql_cells(source: str, module: str, tables: list[str] | None = None,
                     gold_sql: dict[str, str] | None = None) -> list[str]:
-    """Generate SparkSQL cells for the Gold notebook (SQL kernel variant)."""
+    """Generate SparkSQL cells for the Gold notebook (SQL kernel variant).
+    Falls back to STANDARD_SQL for tables without custom SQL.
+    """
     if gold_sql is None:
         gold_sql = {}
+    # Fall back to STANDARD_SQL for tables without custom SQL
+    std_gold = STANDARD_SQL.get(source, {}).get(module, {}).get("gold", {})
     cells = [f"-- Gold Layer — {source} {module} business KPIs (SparkSQL)"]
     for t in (tables or []):
-        if t in gold_sql:
+        sql = gold_sql.get(t) or std_gold.get(t)
+        if sql:
+            label = "custom SQL" if gold_sql.get(t) else "standard SQL"
             cells.append(
-                f"-- Gold KPI — {t} (custom SQL)\n"
+                f"-- Gold KPI — {t} ({label})\n"
                 f"CREATE OR REPLACE TABLE gold.{t.lower()} USING delta AS\n"
-                f"{gold_sql[t]};"
+                f"{sql};"
             )
-    stub_tables = [t for t in (tables or []) if t not in (gold_sql or {})]
+    stub_tables = [t for t in (tables or []) if not gold_sql.get(t) and not std_gold.get(t)]
     if stub_tables or not tables:
         cells.append(
             f"-- TODO: Add Gold aggregation queries for {module}\n"
@@ -1012,6 +1491,7 @@ class PreviewNotebooksRequest(BaseModel):
     silver_sql:     dict[str, str] = {}
     gold_sql:       dict[str, str] = {}
     notebook_types: dict[str, str] = {}   # bronze/silver/gold → "pyspark" or "sql"
+    table_kernel_types: dict[str, str] = {}   # per-table kernel override
 
 
 @router.post("/preview-notebooks")
@@ -1025,19 +1505,47 @@ async def preview_notebooks(req: PreviewNotebooksRequest):
     result: dict[str, str] = {}
 
     def _get_cells(layer: str) -> list[str]:
-        kernel = req.notebook_types.get(layer.lower(), "pyspark")
+        key          = layer.lower()
+        layer_kernel = req.notebook_types.get(key, "pyspark")
+
+        # Split tables by their effective kernel type
+        # Tables with a per-table override use that kernel; others use the layer default
+        sql_tables     = [t for t in tables if req.table_kernel_types.get(t, layer_kernel) == "sql"]
+        pyspark_tables = [t for t in tables if req.table_kernel_types.get(t, layer_kernel) != "sql"]
+
         if layer == "Bronze":
-            if kernel == "sql":
-                return _bronze_sql_cells(req.source_type, req.module, tables, req.custom_sql)
-            return _bronze_cells(req.source_type, req.module, tables, req.custom_sql)
+            cells = []
+            if pyspark_tables:
+                cells += _bronze_cells(req.source_type, req.module, pyspark_tables, req.custom_sql)
+            if sql_tables:
+                cells += _bronze_sql_cells(req.source_type, req.module, sql_tables, req.custom_sql)
+            return cells if cells else (
+                _bronze_sql_cells(req.source_type, req.module, tables, req.custom_sql)
+                if layer_kernel == "sql" else
+                _bronze_cells(req.source_type, req.module, tables, req.custom_sql)
+            )
         if layer == "Silver":
-            if kernel == "sql":
-                return _silver_sql_cells(req.source_type, req.module, tables, req.silver_sql)
-            return _silver_cells(req.source_type, req.module, tables, req.silver_sql)
+            cells = []
+            if pyspark_tables:
+                cells += _silver_cells(req.source_type, req.module, pyspark_tables, req.silver_sql)
+            if sql_tables:
+                cells += _silver_sql_cells(req.source_type, req.module, sql_tables, req.silver_sql)
+            return cells if cells else (
+                _silver_sql_cells(req.source_type, req.module, tables, req.silver_sql)
+                if layer_kernel == "sql" else
+                _silver_cells(req.source_type, req.module, tables, req.silver_sql)
+            )
         if layer == "Gold":
-            if kernel == "sql":
-                return _gold_sql_cells(req.source_type, req.module, tables, req.gold_sql)
-            return _gold_cells(req.source_type, req.module, tables, req.gold_sql)
+            cells = []
+            if pyspark_tables:
+                cells += _gold_cells(req.source_type, req.module, pyspark_tables, req.gold_sql)
+            if sql_tables:
+                cells += _gold_sql_cells(req.source_type, req.module, sql_tables, req.gold_sql)
+            return cells if cells else (
+                _gold_sql_cells(req.source_type, req.module, tables, req.gold_sql)
+                if layer_kernel == "sql" else
+                _gold_cells(req.source_type, req.module, tables, req.gold_sql)
+            )
         return []
 
     if req.create_bronze:
@@ -1079,6 +1587,24 @@ async def preview_notebooks(req: PreviewNotebooksRequest):
             {"properties": {"activities": activities}}, indent=2)
 
     return {"layers": result, "cell_separator": _CELL_SEP.strip()}
+
+
+@router.get("/standard-sql")
+async def get_standard_sql(source_type: str = Query(...), module: str = Query(...)):
+    """
+    Return industry-standard Silver and Gold SQL templates for the given ERP source + module.
+    Templates follow dimensional modelling conventions (Kimball) for each ERP.
+    Returns { silver: {table: sql}, gold: {table: sql} }
+    """
+    src_map  = STANDARD_SQL.get(source_type, {})
+    mod_map  = src_map.get(module, {})
+    return {
+        "source_type": source_type,
+        "module":      module,
+        "silver":      mod_map.get("silver", {}),
+        "gold":        mod_map.get("gold",   {}),
+        "has_standard": bool(mod_map),
+    }
 
 
 # Type-specific Fabric API endpoints per official MS docs
@@ -1197,29 +1723,55 @@ async def deploy(req: DeployRequest):
     try:
         # ── Notebooks ──────────────────────────────────────────────────────────
         def _build_cells(layer: str) -> list[str]:
-            """Return cells — from user-edited code if provided, else auto-generated."""
-            key    = layer.lower()
-            kernel = req.notebook_types.get(key, "pyspark")
+            """Return cells — from user-edited code if provided, else auto-generated.
+            Handles per-table kernel type overrides: tables whose kernel type differs
+            from the layer default are routed to the appropriate cell generator.
+            The notebook itself uses the layer default kernel; cell content reflects
+            each table's effective kernel type (PySpark uses spark.sql() wrapper,
+            SparkSQL uses CREATE OR REPLACE TABLE ... AS syntax).
+            """
+            key          = layer.lower()
+            layer_kernel = req.notebook_types.get(key, "pyspark")
             # User-edited code overrides auto-generated cells
             custom_code = req.custom_notebook_code.get(key, "").strip()
             if custom_code:
                 return _code_to_cells(custom_code)
+
+            # Split tables by their effective kernel type
+            sql_tables     = [t for t in tables if req.table_kernel_types.get(t, layer_kernel) == "sql"]
+            pyspark_tables = [t for t in tables if req.table_kernel_types.get(t, layer_kernel) != "sql"]
+
             if layer == "Bronze":
-                return (
+                cells = []
+                if pyspark_tables:
+                    cells += _bronze_cells(req.source_type, req.module, pyspark_tables, req.custom_sql)
+                if sql_tables:
+                    cells += _bronze_sql_cells(req.source_type, req.module, sql_tables, req.custom_sql)
+                return cells if cells else (
                     _bronze_sql_cells(req.source_type, req.module, tables, req.custom_sql)
-                    if kernel == "sql" else
+                    if layer_kernel == "sql" else
                     _bronze_cells(req.source_type, req.module, tables, req.custom_sql)
                 )
             if layer == "Silver":
-                return (
+                cells = []
+                if pyspark_tables:
+                    cells += _silver_cells(req.source_type, req.module, pyspark_tables, req.silver_sql)
+                if sql_tables:
+                    cells += _silver_sql_cells(req.source_type, req.module, sql_tables, req.silver_sql)
+                return cells if cells else (
                     _silver_sql_cells(req.source_type, req.module, tables, req.silver_sql)
-                    if kernel == "sql" else
+                    if layer_kernel == "sql" else
                     _silver_cells(req.source_type, req.module, tables, req.silver_sql)
                 )
             if layer == "Gold":
-                return (
+                cells = []
+                if pyspark_tables:
+                    cells += _gold_cells(req.source_type, req.module, pyspark_tables, req.gold_sql)
+                if sql_tables:
+                    cells += _gold_sql_cells(req.source_type, req.module, sql_tables, req.gold_sql)
+                return cells if cells else (
                     _gold_sql_cells(req.source_type, req.module, tables, req.gold_sql)
-                    if kernel == "sql" else
+                    if layer_kernel == "sql" else
                     _gold_cells(req.source_type, req.module, tables, req.gold_sql)
                 )
             return []
