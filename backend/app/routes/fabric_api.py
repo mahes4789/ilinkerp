@@ -1247,6 +1247,17 @@ async def deploy(req: DeployRequest):
             if art["status"] in ("created", "updated", "simulated", "pending"):
                 nb_ids[layer] = art["id"]
 
+        # ── Augment nb_ids with pre-existing notebooks not deployed this run ──
+        # Ensures the orchestration pipeline always sequences ALL available layers
+        # (Bronze → Silver → Gold) regardless of whether each notebook was just
+        # created, just updated, or already existed from a prior deploy and was
+        # not selected this run (e.g. pipeline-only or partial-layer redeploy).
+        for layer in ("Bronze", "Silver", "Gold"):
+            if layer not in nb_ids:                        # not touched this run
+                nb_name = f"{prefix}_{layer}_Notebook"
+                if nb_name in existing_ids:                # but present in workspace
+                    nb_ids[layer] = existing_ids[nb_name]
+
         # ── Data Pipeline ──────────────────────────────────────────────────────
         if req.create_pipeline:
             # Use user-edited pipeline JSON if provided, else auto-generate
