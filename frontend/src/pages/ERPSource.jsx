@@ -1179,12 +1179,13 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   const selectedType = connTypes.find(c =>
     c.type === (wizard.fabricConnType || connTypes[0]?.type)) ?? connTypes[0];
 
-  // ── Workspace list (lazy — fetched on "Fetch" click) ───────────────────────
+  // ── Workspace list (auto-fetched when active Fabric connection is valid) ─────
   const wsQuery = useQuery({
     queryKey:  ["fabric-workspaces"],
     queryFn:   () => axios.get(`${API}/api/fabric/workspaces`).then(r => r.data),
-    enabled:   false,
+    enabled:   activeConn?.status === "valid",
     retry:     false,
+    staleTime: 5 * 60 * 1000,
     onSuccess: data => {
       setWsMode("picker");
       if (data.workspaces?.length === 0)
@@ -1193,15 +1194,21 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
     onError: () => toast.error("Could not fetch workspaces — is the MS365 token set?"),
   });
 
-  // ── Lakehouse list (lazy — enabled after workspace_id is known) ────────────
+  // Switch to picker mode automatically when workspace data arrives
+  useEffect(() => {
+    if (wsQuery.data?.workspaces?.length > 0) setWsMode("picker");
+  }, [wsQuery.data]);
+
+  // ── Lakehouse list (auto-fetched when workspace is selected + connection valid)
   const lhQuery = useQuery({
     queryKey:  ["fabric-lakehouses", wizard.fabricWorkspace?.workspace_id],
     queryFn:   () =>
       axios.get(
         `${API}/api/fabric/workspaces/${wizard.fabricWorkspace?.workspace_id}/lakehouses`
       ).then(r => r.data),
-    enabled:   false,
+    enabled:   !!wizard.fabricWorkspace?.workspace_id && activeConn?.status === "valid",
     retry:     false,
+    staleTime: 5 * 60 * 1000,
     onSuccess: data => {
       setLhMode("picker");
       if (data.lakehouses?.length === 0)
@@ -1209,6 +1216,11 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
     },
     onError: () => toast.error("Could not fetch lakehouses"),
   });
+
+  // Switch to picker mode automatically when lakehouse data arrives
+  useEffect(() => {
+    if (lhQuery.data?.lakehouses?.length > 0) setLhMode("picker");
+  }, [lhQuery.data]);
 
   const handleWorkspace = (name, value) =>
     setWizard(w => ({ ...w, fabricWorkspace: { ...w.fabricWorkspace, [name]: value } }));
@@ -1812,6 +1824,120 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   );
 }
 
+// ── Dimensional modeling suggestions (Silver layer) ───────────────────────────
+const DIM_SUGGESTIONS = {
+  finance: [
+    { sourceTable: "GL_JE_LINES",               targetName: "fact_gl_transactions",       type: "fact", businessName: "GL Transactions",       description: "Journal entry lines with amounts, accounts, periods" },
+    { sourceTable: "GL_JE_HEADERS",             targetName: "fact_journal_entries",       type: "fact", businessName: "Journal Entries",        description: "Journal headers with batch, status, source" },
+    { sourceTable: "GL_CODE_COMBINATIONS",      targetName: "dim_account",                type: "dim",  businessName: "Chart of Accounts",      description: "Account codes, segments, and descriptions" },
+    { sourceTable: "GL_PERIODS",                targetName: "dim_period",                 type: "dim",  businessName: "Accounting Periods",     description: "Fiscal calendar periods" },
+    { sourceTable: "FND_CURRENCIES",            targetName: "dim_currency",               type: "dim",  businessName: "Currencies",             description: "Currency codes and exchange rates" },
+    { sourceTable: "FND_FLEX_VALUES",           targetName: "dim_cost_center",            type: "dim",  businessName: "Cost Centers",           description: "Cost center hierarchy" },
+  ],
+  order_management: [
+    { sourceTable: "OE_ORDER_HEADERS_ALL",      targetName: "fact_sales_orders",          type: "fact", businessName: "Sales Orders",           description: "Order headers with customer, total, status" },
+    { sourceTable: "OE_ORDER_LINES_ALL",        targetName: "fact_order_lines",           type: "fact", businessName: "Order Lines",            description: "Line items with product, qty, price" },
+    { sourceTable: "HZ_CUST_ACCOUNTS",          targetName: "dim_customer",               type: "dim",  businessName: "Customers",              description: "Customer account master data" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_product",                type: "dim",  businessName: "Products",               description: "Item master with attributes" },
+    { sourceTable: "RA_TERRITORIES",            targetName: "dim_territory",              type: "dim",  businessName: "Sales Territories",      description: "Geographic and sales territory hierarchy" },
+  ],
+  accounts_payable: [
+    { sourceTable: "AP_INVOICES_ALL",           targetName: "fact_ap_invoices",           type: "fact", businessName: "AP Invoices",            description: "Supplier invoices with amounts and due dates" },
+    { sourceTable: "AP_INVOICE_LINES_ALL",      targetName: "fact_ap_invoice_lines",      type: "fact", businessName: "AP Invoice Lines",       description: "Invoice line distributions" },
+    { sourceTable: "AP_PAYMENTS_ALL",           targetName: "fact_ap_payments",           type: "fact", businessName: "AP Payments",            description: "Payment transactions and remittances" },
+    { sourceTable: "AP_SUPPLIERS",              targetName: "dim_supplier",               type: "dim",  businessName: "Suppliers",              description: "Supplier master with categories" },
+    { sourceTable: "AP_TERMS",                  targetName: "dim_payment_terms",          type: "dim",  businessName: "Payment Terms",          description: "Payment terms definitions" },
+  ],
+  accounts_receivable: [
+    { sourceTable: "RA_CUSTOMER_TRX_ALL",       targetName: "fact_ar_invoices",           type: "fact", businessName: "AR Invoices",            description: "Customer invoices with amounts and aging" },
+    { sourceTable: "AR_CASH_RECEIPTS_ALL",      targetName: "fact_ar_receipts",           type: "fact", businessName: "AR Receipts",            description: "Customer payments and receipts" },
+    { sourceTable: "HZ_CUST_ACCOUNTS",          targetName: "dim_customer",               type: "dim",  businessName: "Customers",              description: "Customer master with segments" },
+  ],
+  procurement: [
+    { sourceTable: "PO_HEADERS_ALL",            targetName: "fact_purchase_orders",       type: "fact", businessName: "Purchase Orders",        description: "PO headers with supplier, total, status" },
+    { sourceTable: "PO_LINES_ALL",              targetName: "fact_po_lines",              type: "fact", businessName: "PO Lines",               description: "PO line items with item, qty, price" },
+    { sourceTable: "RCV_TRANSACTIONS",          targetName: "fact_goods_receipts",        type: "fact", businessName: "Goods Receipts",         description: "PO receipts and returns" },
+    { sourceTable: "AP_SUPPLIERS",              targetName: "dim_supplier",               type: "dim",  businessName: "Suppliers",              description: "Supplier master data" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_item",                   type: "dim",  businessName: "Items",                  description: "Item master with purchasing attributes" },
+  ],
+  inventory: [
+    { sourceTable: "MTL_TRANSACTION_ACCOUNTS",  targetName: "fact_inventory_movements",   type: "fact", businessName: "Inventory Movements",    description: "Inventory transactions with cost and qty" },
+    { sourceTable: "MTL_ONHAND_QUANTITIES_DETAIL", targetName: "fact_inventory_snapshot", type: "fact", businessName: "Inventory Snapshot",     description: "On-hand inventory by location" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_item",                   type: "dim",  businessName: "Items / Products",       description: "Item master with inventory attributes" },
+    { sourceTable: "ORG_ORGANIZATION_DEFINITIONS", targetName: "dim_warehouse",           type: "dim",  businessName: "Warehouses",             description: "Inventory organizations and warehouses" },
+  ],
+  human_resources: [
+    { sourceTable: "PER_ALL_PEOPLE_F",          targetName: "dim_employee",               type: "dim",  businessName: "Employees",              description: "Employee personal and employment details" },
+    { sourceTable: "PER_ALL_ASSIGNMENTS_F",     targetName: "fact_assignments",           type: "fact", businessName: "Employee Assignments",    description: "Work assignments with org, job, grade" },
+    { sourceTable: "PER_ABSENCE_ATTENDANCES",   targetName: "fact_absence",               type: "fact", businessName: "Absence Records",         description: "Leave and absence events" },
+    { sourceTable: "HR_ALL_ORGANIZATION_UNITS", targetName: "dim_department",             type: "dim",  businessName: "Departments",            description: "Organization unit hierarchy" },
+    { sourceTable: "PER_JOBS",                  targetName: "dim_job",                    type: "dim",  businessName: "Jobs",                   description: "Job definitions and families" },
+  ],
+};
+
+// ── Gold KPI suggestions (Gold layer) ─────────────────────────────────────────
+const GOLD_KPI_SUGGESTIONS = {
+  finance:            [
+    { targetTable: "fact_financial_performance_monthly", businessName: "Monthly P&L Summary",        description: "Revenue, expenses, net income by cost center and period",   granularity: "Monthly" },
+    { targetTable: "fact_account_balance_ytd",           businessName: "YTD Account Balances",        description: "Year-to-date running balance by account, entity, currency",  granularity: "Monthly" },
+    { targetTable: "fact_cash_flow_monthly",             businessName: "Monthly Cash Flow",            description: "Operating, investing, financing cash flow by period",        granularity: "Monthly" },
+  ],
+  order_management:   [
+    { targetTable: "fact_sales_performance_monthly",     businessName: "Monthly Sales Performance",   description: "Revenue, orders, units sold by customer, product, territory", granularity: "Monthly" },
+    { targetTable: "fact_order_fulfillment_kpi",         businessName: "Order Fulfillment KPIs",      description: "On-time delivery %, fill rate, lead time by warehouse",       granularity: "Weekly"  },
+    { targetTable: "fact_customer_revenue_monthly",      businessName: "Customer Revenue Monthly",    description: "Invoiced revenue by customer and product line per month",     granularity: "Monthly" },
+  ],
+  accounts_payable:   [
+    { targetTable: "fact_ap_aging_monthly",              businessName: "AP Aging Monthly",            description: "Outstanding AP by supplier, age bucket (0-30, 31-60, 60+)",  granularity: "Monthly" },
+    { targetTable: "fact_spend_analysis_monthly",        businessName: "Monthly Spend Analysis",      description: "Total spend by supplier, category, cost center per month",    granularity: "Monthly" },
+    { targetTable: "fact_payment_performance_monthly",   businessName: "Payment Performance (DPO)",   description: "On-time payment %, Days Payable Outstanding by supplier",     granularity: "Monthly" },
+  ],
+  accounts_receivable:[
+    { targetTable: "fact_ar_aging_monthly",              businessName: "AR Aging Monthly",            description: "Outstanding AR by customer, age bucket per month",            granularity: "Monthly" },
+    { targetTable: "fact_revenue_by_customer_monthly",   businessName: "Monthly Revenue by Customer", description: "Invoiced revenue by customer, product category per month",    granularity: "Monthly" },
+    { targetTable: "fact_dso_monthly",                   businessName: "DSO (Days Sales Outstanding)", description: "DSO trend by business unit per month",                       granularity: "Monthly" },
+  ],
+  procurement:        [
+    { targetTable: "fact_po_spend_monthly",              businessName: "Monthly PO Spend",            description: "Committed spend by supplier, category, business unit",        granularity: "Monthly" },
+    { targetTable: "fact_supplier_performance_monthly",  businessName: "Supplier Performance",        description: "On-time delivery, defect rate, spend by supplier monthly",    granularity: "Monthly" },
+  ],
+  inventory:          [
+    { targetTable: "fact_inventory_kpi_daily",           businessName: "Daily Inventory KPIs",        description: "Stock on hand value, turnover, days on hand by item",         granularity: "Daily"   },
+    { targetTable: "fact_stock_aging_weekly",            businessName: "Stock Aging Analysis",        description: "Aging buckets (0-30, 31-60, 90+ days) by item, warehouse",    granularity: "Weekly"  },
+    { targetTable: "fact_inventory_accuracy_monthly",    businessName: "Inventory Accuracy",          description: "Cycle count accuracy %, variance by warehouse",               granularity: "Monthly" },
+  ],
+  human_resources:    [
+    { targetTable: "fact_headcount_monthly",             businessName: "Monthly Headcount",           description: "Headcount by department, job, location, employment type",     granularity: "Monthly" },
+    { targetTable: "fact_attrition_quarterly",           businessName: "Quarterly Attrition Rate",    description: "Voluntary/involuntary attrition rate by department",           granularity: "Quarterly"},
+    { targetTable: "fact_payroll_summary_monthly",       businessName: "Monthly Payroll Summary",     description: "Payroll cost by department, grade, location per month",        granularity: "Monthly" },
+  ],
+  generic:            [
+    { targetTable: "fact_summary_monthly",               businessName: "Monthly Summary Metrics",     description: "Aggregated KPIs by dimension and month",                      granularity: "Monthly" },
+    { targetTable: "fact_performance_kpi",               businessName: "Performance KPIs",            description: "Key performance indicators by business dimension",             granularity: "Daily"   },
+  ],
+};
+
+function _guessTableType(t) {
+  const n = t.toLowerCase();
+  if (n.startsWith("fact_") || n.endsWith("_all") || n.includes("_transaction") ||
+      n.includes("_lines") || n.includes("_history") || n.includes("_je_")) return "fact";
+  return "dim";
+}
+function _guessTargetName(t) {
+  const type = _guessTableType(t);
+  const cleaned = t.toLowerCase()
+    .replace(/_all$/,"").replace(/_b$/,"").replace(/_f$/,"").replace(/_tl$/,"")
+    .replace(/^oe_/,"").replace(/^hz_/,"").replace(/^mtl_/,"")
+    .replace(/^per_/,"").replace(/^hr_/,"").replace(/^gl_/,"")
+    .replace(/^ap_/,"").replace(/^ar_/,"").replace(/^po_/,"")
+    .replace(/^ra_/,"").replace(/^fnd_/,"").replace(/^org_/,"");
+  return (type === "fact" ? "fact_" : "dim_") + (cleaned || t.toLowerCase());
+}
+function _humanize(t) {
+  return t.replace(/_all$/i,"").replace(/_b$/i,"").replace(/_f$/i,"")
+    .replace(/_/g," ").split(" ").map(w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(" ");
+}
+
 // ── Step 5: Deploy ────────────────────────────────────────────────────────────
 function StepDeploy({ wizard, onBack }) {
   // ── Core state ────────────────────────────────────────────────────────────
@@ -1819,6 +1945,37 @@ function StepDeploy({ wizard, onBack }) {
   const [result,      setResult]      = useState(null);
   const [verifying,   setVerifying]   = useState(false);
   const [verifyItems, setVerifyItems] = useState(null);
+
+  // ── Sub-step navigation: 1=Bronze 2=Silver 3=Gold 4=Deploy ────────────────
+  const [deploySubStep, setDeploySubStep] = useState(1);
+
+  // ── Bronze ERL — Extract configuration ────────────────────────────────────
+  const [bronzeErl, setBronzeErl] = useState({
+    loadMode:     "full",      // "full" | "incremental"
+    watermarkCol: "",          // e.g. LAST_UPDATE_DATE
+    parallelism:  4,
+    compression:  "snappy",    // "snappy" | "gzip" | "none"
+    partitionBy:  "",          // optional partition column
+  });
+
+  // ── Silver ERL — Refine + Dimensional Modeling ────────────────────────────
+  const [silverErl, setSilverErl] = useState({
+    dedup:        true,
+    nullHandling: "keep",      // "keep" | "drop_rows" | "fill_default"
+    castTypes:    true,
+    surrogateKey: false,
+    scdType:      "type1",     // "type1" | "type2"
+  });
+  const [dimMappings,    setDimMappings]    = useState([]);
+  const [dimExpanded,    setDimExpanded]    = useState(null);
+
+  // ── Gold ERL — Aggregate / KPI configuration ──────────────────────────────
+  const [goldErl, setGoldErl] = useState({
+    granularity:    "monthly", // "daily" | "weekly" | "monthly" | "quarterly"
+    addCalendarDim: true,
+  });
+  const [goldKpis,       setGoldKpis]       = useState([]);
+  const [kpiExpanded,    setKpiExpanded]    = useState(null);
 
   // Notebook kernel per layer: "pyspark" (default) or "sql"
   const [notebookTypes, setNotebookTypes] = useState({ bronze: "pyspark", silver: "pyspark", gold: "pyspark" });
@@ -1846,6 +2003,38 @@ function StepDeploy({ wizard, onBack }) {
   const [expandedErrors, setExpandedErrors] = useState(new Set());
 
   const tables = wizard.discoveredTables ?? [];
+
+  // ── Initialize dimensional model mappings from suggestions ────────────────
+  useEffect(() => {
+    if (tables.length === 0 || dimMappings.length > 0) return;
+    const modKey = (wizard.module ?? "").toLowerCase().replace(/[\s\-]+/g, "_");
+    const suggs  = DIM_SUGGESTIONS[modKey];
+    if (suggs?.length > 0) {
+      // Use suggestions that match discovered tables (partial match)
+      const matched = suggs.filter(s =>
+        tables.some(t => t.toUpperCase().includes(s.sourceTable.replace(/_ALL$/,"").replace(/_B$/,"")))
+      );
+      const unmatched = tables
+        .filter(t => !matched.some(s => t.toUpperCase().includes(s.sourceTable.replace(/_ALL$/,"").replace(/_B$/,""))))
+        .map((t, i) => ({ sourceTable: t, targetName: _guessTargetName(t), type: _guessTableType(t), businessName: _humanize(t), description: "", enabled: true, id: `gen-${i}` }));
+      setDimMappings([...matched.map((s, i) => ({ ...s, enabled: true, id: `sug-${i}` })), ...unmatched]);
+    } else {
+      setDimMappings(tables.map((t, i) => ({
+        id: `gen-${i}`, sourceTable: t, targetName: _guessTargetName(t),
+        type: _guessTableType(t), businessName: _humanize(t), description: "", enabled: true,
+      })));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tables.join(","), wizard.module]);
+
+  // ── Initialize Gold KPI suggestions ──────────────────────────────────────
+  useEffect(() => {
+    if (goldKpis.length > 0 || !wizard.module) return;
+    const modKey = (wizard.module ?? "").toLowerCase().replace(/[\s\-]+/g, "_");
+    const suggs  = GOLD_KPI_SUGGESTIONS[modKey] ?? GOLD_KPI_SUGGESTIONS.generic;
+    setGoldKpis(suggs.map((k, i) => ({ ...k, id: `kpi-${i}`, enabled: true })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizard.module]);
 
   // ── Derived SQL dicts (for deploy & preview payloads) ────────────────────
   const custom_sql = Object.fromEntries(
@@ -2066,348 +2255,563 @@ function StepDeploy({ wizard, onBack }) {
 
       {!result && (
         <>
-          {/* ── Artifact selection + notebook type toggle ── */}
-          <div className="card" style={{ padding: 20 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 14,
-                         display: "flex", alignItems: "center", gap: 8 }}>
-              <FileCode size={15} style={{ color: "var(--color-primary)" }} />
-              Select Artifacts &amp; Notebook Type
-            </h3>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-              {[
-                { key: "bronze",   label: "Bronze Notebook", icon: FileCode,  desc: "Raw ERP extraction"      },
-                { key: "silver",   label: "Silver Notebook", icon: FileCode,  desc: "Cleanse & conform"       },
-                { key: "gold",     label: "Gold Notebook",   icon: FileCode,  desc: "KPIs & business metrics" },
-                { key: "pipeline", label: "Data Pipeline",   icon: GitBranch, desc: "Bronze→Silver→Gold flow"  },
-              ].map(({ key, label, icon: Icon, desc }) => (
-                <label key={key} style={{
-                  display: "flex", flexDirection: "column", gap: 8,
-                  padding: "14px 16px", borderRadius: 10, cursor: "pointer",
-                  border: `2px solid ${opts[key] ? "var(--color-primary)" : "#e2e8f0"}`,
-                  background: opts[key] ? "var(--color-primary-light)" : "white",
-                  transition: "all 0.12s",
-                }}>
-                  <input type="checkbox" style={{ display: "none" }}
-                    checked={opts[key]}
-                    onChange={e => setOpts(o => ({ ...o, [key]: e.target.checked }))} />
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <Icon size={15} style={{ color: opts[key] ? "var(--color-primary)" : "#94a3b8" }} />
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
-                    {opts[key] && <CheckCircle2 size={12} style={{ color: "var(--color-primary)", marginLeft: "auto" }} />}
-                  </div>
-                  <span style={{ fontSize: 11, color: "#64748b" }}>{desc}</span>
-                  {/* Kernel type toggle — notebooks only */}
-                  {key !== "pipeline" && opts[key] && (
-                    <div style={{ display: "flex", gap: 4, marginTop: 2 }}
-                         onClick={e => e.preventDefault()}>
-                      {[
-                        { val: "pyspark", lbl: "PySpark",  ico: Terminal },
-                        { val: "sql",     lbl: "SparkSQL", ico: Code     },
-                      ].map(({ val, lbl, ico: KIcon }) => (
-                        <button key={val}
-                          onClick={e => { e.preventDefault(); setNotebookTypes(p => ({ ...p, [key]: val })); }}
-                          style={{
-                            flex: 1, padding: "4px 0", fontSize: 10, fontWeight: 600,
-                            borderRadius: 6, cursor: "pointer", border: "1px solid",
-                            display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
-                            background:   notebookTypes[key] === val ? "#1e40af" : "white",
-                            color:        notebookTypes[key] === val ? "white"   : "#64748b",
-                            borderColor:  notebookTypes[key] === val ? "#1e40af" : "#cbd5e1",
-                          }}>
+          {/* ── Deploy Sub-step Navigation Bar ── */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 0,
+            background: "#f8fafc", border: "1px solid #e2e8f0",
+            borderRadius: 10, padding: "6px 8px",
+          }}>
+            {[
+              { id: 1, label: "Bronze",  sublabel: "Extract",          color: "#92400e", bg: "#fef3c7", emoji: "🥉" },
+              { id: 2, label: "Silver",  sublabel: "Refine",            color: "#1d4ed8", bg: "#eff6ff", emoji: "🥈" },
+              { id: 3, label: "Gold",    sublabel: "Load / Aggregate",  color: "#854d0e", bg: "#fef9c3", emoji: "🥇" },
+              { id: 4, label: "Deploy",  sublabel: "Publish to Fabric", color: "#5b21b6", bg: "#f5f3ff", emoji: "🚀" },
+            ].map((s, i) => {
+              const done   = deploySubStep > s.id;
+              const active = deploySubStep === s.id;
+              return (
+                <div key={s.id} style={{ display: "flex", alignItems: "center", flex: 1 }}>
+                  <button
+                    onClick={() => setDeploySubStep(s.id)}
+                    style={{
+                      flex: 1, display: "flex", alignItems: "center", gap: 8,
+                      padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+                      border: active ? `2px solid ${s.color}` : "2px solid transparent",
+                      background: active ? s.bg : done ? "#f0fdf4" : "transparent",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>{done ? "✅" : s.emoji}</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: active ? s.color : done ? "#15803d" : "#64748b" }}>
+                        {s.label}{done ? " ✓" : ""}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#94a3b8" }}>{s.sublabel}</div>
+                    </div>
+                  </button>
+                  {i < 3 && <ChevronRight size={14} style={{ color: "#cbd5e1", flexShrink: 0 }} />}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {/* SUB-STEP 1 — Bronze: Extract Configuration                        */}
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {deploySubStep === 1 && (
+            <>
+              <div className="card" style={{ padding: 20, borderLeft: "4px solid #d97706" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 18 }}>🥉</span>
+                    Bronze Notebook — ERL: <span style={{ color: "#d97706" }}>Extract</span>
+                    <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 4 }}>Raw ERP → Delta (bronze schema)</span>
+                  </h3>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                    <input type="checkbox" checked={opts.bronze} onChange={e => setOpts(o => ({ ...o, bronze: e.target.checked }))} />
+                    Enable Bronze
+                  </label>
+                  {opts.bronze && (
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[{ val: "pyspark", lbl: "PySpark", ico: Terminal }, { val: "sql", lbl: "SparkSQL", ico: Code }].map(({ val, lbl, ico: KIcon }) => (
+                        <button key={val} onClick={() => setNotebookTypes(p => ({ ...p, bronze: val }))}
+                          style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer", border: "1px solid", display: "flex", alignItems: "center", gap: 3, background: notebookTypes.bronze === val ? "#1e40af" : "white", color: notebookTypes.bronze === val ? "white" : "#64748b", borderColor: notebookTypes.bronze === val ? "#1e40af" : "#cbd5e1" }}>
                           <KIcon size={9} /> {lbl}
                         </button>
                       ))}
                     </div>
                   )}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Custom SQL per table ── */}
-          {tables.length > 0 && (
-            <div className="card" style={{ padding: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0,
-                             display: "flex", alignItems: "center", gap: 8 }}>
-                  <Code size={15} style={{ color: "#7c3aed" }} />
-                  Custom SQL Configuration
-                  <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional)</span>
-                </h3>
-                {sqlConfiguredCount > 0 && (
-                  <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20,
-                                 background: "#f0fdf4", color: "#15803d",
-                                 border: "1px solid #bbf7d0", fontWeight: 600 }}>
-                    {sqlConfiguredCount} table{sqlConfiguredCount !== 1 ? "s" : ""} configured
-                  </span>
+                </div>
+                {opts.bronze && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Extract Mode</label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        {[
+                          { val: "full",        label: "Full Refresh",  desc: "Re-extract all rows on each run"      },
+                          { val: "incremental", label: "Incremental",   desc: "Extract only new/changed rows"        },
+                        ].map(({ val, label, desc }) => (
+                          <button key={val} onClick={() => setBronzeErl(e => ({ ...e, loadMode: val }))}
+                            style={{ flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer", border: `2px solid ${bronzeErl.loadMode === val ? "#d97706" : "#e2e8f0"}`, background: bronzeErl.loadMode === val ? "#fef3c7" : "white", textAlign: "left" }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: bronzeErl.loadMode === val ? "#92400e" : "#374151" }}>{label}</div>
+                            <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{desc}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                        Watermark Column {bronzeErl.loadMode === "incremental" && <span style={{ color: "#ef4444" }}>*</span>}
+                        <span style={{ fontWeight: 400, color: "#94a3b8", marginLeft: 6, fontSize: 11 }}>(for incremental extraction)</span>
+                      </label>
+                      <input type="text" className="input" value={bronzeErl.watermarkCol} onChange={e => setBronzeErl(v => ({ ...v, watermarkCol: e.target.value }))} placeholder="e.g. LAST_UPDATE_DATE, UPDATED_AT" style={{ fontFamily: "monospace", fontSize: 12 }} disabled={bronzeErl.loadMode === "full"} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Parallelism <span style={{ fontWeight: 400, color: "#94a3b8" }}>(concurrent threads)</span></label>
+                      <select className="input" value={bronzeErl.parallelism} onChange={e => setBronzeErl(v => ({ ...v, parallelism: Number(e.target.value) }))}>
+                        {[1,2,4,8,16].map(n => <option key={n} value={n}>{n} threads</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Delta Compression</label>
+                      <select className="input" value={bronzeErl.compression} onChange={e => setBronzeErl(v => ({ ...v, compression: e.target.value }))}>
+                        <option value="snappy">Snappy (default, fast)</option>
+                        <option value="gzip">GZip (higher ratio)</option>
+                        <option value="none">None (uncompressed)</option>
+                      </select>
+                    </div>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Partition By Column <span style={{ fontWeight: 400, color: "#94a3b8" }}>(optional, e.g. ORG_ID, LEDGER_ID)</span></label>
+                      <input type="text" className="input" value={bronzeErl.partitionBy} onChange={e => setBronzeErl(v => ({ ...v, partitionBy: e.target.value }))} placeholder="Leave blank to skip partitioning" style={{ fontFamily: "monospace", fontSize: 12 }} />
+                    </div>
+                  </div>
                 )}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {tables.map(t => (
-                  <div key={t} style={{
-                    border: "1px solid",
-                    borderColor: tableHasSql(t) ? "#a5b4fc" : "#e2e8f0",
-                    borderRadius: 8, overflow: "hidden",
-                    background: tableHasSql(t) ? "#fafafe" : "white",
-                  }}>
-                    {/* Table row header */}
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "10px 14px", cursor: "pointer",
-                    }} onClick={() => setSqlExpandedTable(sqlExpandedTable === t ? null : t)}>
-                      <Table2 size={13} style={{ color: "#64748b", flexShrink: 0 }} />
-                      <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
-                      {tableHasSql(t) && (
-                        <span style={{
-                          fontSize: 10, padding: "2px 8px", borderRadius: 20,
-                          background: "#eff6ff", color: "#1d4ed8",
-                          border: "1px solid #bfdbfe", fontWeight: 600,
-                          display: "flex", alignItems: "center", gap: 4,
-                        }}>
-                          <Code size={9} /> SQL configured
-                        </span>
-                      )}
-                      {sqlExpandedTable === t
-                        ? <ChevronUp   size={14} style={{ color: "#94a3b8" }} />
-                        : <ChevronDown size={14} style={{ color: "#94a3b8" }} />}
-                    </div>
-
-                    {/* Expanded SQL editor */}
-                    {sqlExpandedTable === t && (
-                      <div style={{ borderTop: "1px solid #e2e8f0", padding: 14 }}>
-                        {/* Layer tabs + per-table kernel toggle */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                          <div style={{ display: "flex", gap: 4 }}>
-                            {["bronze", "silver", "gold"].map(layer => {
-                              const hasVal = sqlConfig[t]?.[layer]?.trim();
-                              return (
-                                <button key={layer}
-                                  onClick={() => setSqlActiveLayer(layer)}
-                                  style={{
-                                    padding: "4px 12px", fontSize: 11, fontWeight: 600,
-                                    borderRadius: 6, cursor: "pointer", border: "1px solid",
-                                    display: "flex", alignItems: "center", gap: 4,
-                                    background:  sqlActiveLayer === layer ? layerBg[layer]    : "white",
-                                    color:       sqlActiveLayer === layer ? layerColor[layer] : "#64748b",
-                                    borderColor: sqlActiveLayer === layer ? layerColor[layer] : "#e2e8f0",
-                                  }}>
-                                  {layer.charAt(0).toUpperCase() + layer.slice(1)}
-                                  {hasVal && <span style={{ width: 6, height: 6, borderRadius: "50%",
-                                                            background: layerColor[layer], display: "inline-block" }} />}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          {/* Per-table kernel toggle */}
-                          <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
-                            <span style={{ fontSize: 11, color: "var(--color-muted)" }}>Kernel:</span>
-                            {["pyspark", "sql"].map(k => (
-                              <button
-                                key={k}
-                                onClick={() => setTableKernelTypes(prev => ({
-                                  ...prev,
-                                  [t]: prev[t] === k ? undefined : k
-                                }))}
-                                style={{
-                                  fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 6,
-                                  border: `1px solid ${(tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary)" : "#e2e8f0"}`,
-                                  background: (tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary-light)" : "white",
-                                  color:      (tableKernelTypes[t] ?? notebookTypes[sqlActiveLayer]) === k ? "var(--color-primary)" : "#64748b",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                {k === "pyspark" ? "PySpark" : "SparkSQL"}
-                              </button>
-                            ))}
-                            {tableKernelTypes[t] && (
-                              <span style={{ fontSize: 10, color: "var(--color-muted)" }}>(overrides layer default)</span>
-                            )}
-                          </div>
+              {tables.length > 0 && opts.bronze && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Code size={14} style={{ color: "#d97706" }} /> Bronze SQL Override
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — overrides default SELECT *)</span>
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {tables.map(t => (
+                      <div key={t} style={{ border: "1px solid", borderColor: sqlConfig[t]?.bronze?.trim() ? "#fbbf24" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: sqlConfig[t]?.bronze?.trim() ? "#fffbeb" : "white" }} onClick={() => setSqlExpandedTable(sqlExpandedTable === `b-${t}` ? null : `b-${t}`)}>
+                          <Table2 size={12} style={{ color: "#d97706" }} />
+                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
+                          {sqlConfig[t]?.bronze?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#fef9c3", color: "#92400e", fontWeight: 600 }}>SQL set</span>}
+                          {sqlExpandedTable === `b-${t}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
                         </div>
-                        <textarea
-                          placeholder={sqlPlaceholder(t, sqlActiveLayer)}
-                          value={sqlConfig[t]?.[sqlActiveLayer] ?? ""}
-                          onChange={e => setSqlConfig(prev => ({
-                            ...prev,
-                            [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: e.target.value },
-                          }))}
-                          style={{
-                            width: "100%", height: 100, fontFamily: "monospace",
-                            fontSize: 12, padding: 10, borderRadius: 6,
-                            border: "1px solid #cbd5e1", resize: "vertical",
-                            color: "#1e293b", background: "#f8fafc",
-                          }}
-                        />
-                        <div style={{ display: "flex", justifyContent: "space-between",
-                                      alignItems: "center", marginTop: 6 }}>
-                          <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                            {sqlActiveLayer === "bronze"
-                              ? "Override JDBC query for Bronze extraction"
-                              : sqlActiveLayer === "silver"
-                              ? "Custom transform SQL reading from bronze layer"
-                              : "Aggregation / KPI SQL reading from silver layer"}
-                          </span>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            {/* Reset to standard button */}
-                            {standardSql[sqlActiveLayer]?.[t] && sqlConfig[t]?.[sqlActiveLayer] !== standardSql[sqlActiveLayer][t] && (
-                              <button
-                                onClick={() => setSqlConfig(prev => ({
-                                  ...prev,
-                                  [t]: { ...prev[t], [sqlActiveLayer]: standardSql[sqlActiveLayer][t] }
-                                }))}
-                                style={{ fontSize: 11, color: "#6366f1", cursor: "pointer", background: "none", border: "none", padding: 0 }}
-                              >
-                                ↺ Reset to standard
-                              </button>
-                            )}
-                            {sqlConfig[t]?.[sqlActiveLayer]?.trim() && (
-                              <button
-                                onClick={() => setSqlConfig(prev => ({
-                                  ...prev, [t]: { ...(prev[t] ?? {}), [sqlActiveLayer]: "" },
-                                }))}
-                                style={{ fontSize: 11, color: "#b91c1c", background: "none",
-                                         border: "none", cursor: "pointer", padding: 0 }}>
-                                Clear
-                              </button>
-                            )}
+                        {sqlExpandedTable === `b-${t}` && (
+                          <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
+                            <textarea placeholder={`SELECT * FROM ${t}  -- default JDBC query`} value={sqlConfig[t]?.bronze ?? ""} onChange={e => setSqlConfig(p => ({ ...p, [t]: { ...(p[t] ?? {}), bronze: e.target.value } }))} style={{ width: "100%", height: 80, fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc" }} />
+                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                              <span style={{ fontSize: 11, color: "#94a3b8" }}>Override JDBC extraction SQL for this table</span>
+                              {sqlConfig[t]?.bronze?.trim() && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], bronze: "" } }))} style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
-                    )}
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
+                </div>
+              )}
+            </>
           )}
 
-          {/* ── Preview & Customize Code ── */}
-          <div className="card" style={{ padding: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: showPreview ? 16 : 0 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0,
-                           display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-                <FileCode size={15} style={{ color: "#0891b2" }} />
-                Preview &amp; Customize Code
-                <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>
-                  (auto-populated · editable before deploy)
-                </span>
-              </h3>
-              <button
-                onClick={fetchPreview}
-                disabled={previewLoading}
-                style={{
-                  padding: "7px 16px", fontSize: 12, fontWeight: 600,
-                  borderRadius: 8, cursor: "pointer", border: "1px solid #0891b2",
-                  background: previewLoading ? "#f0f9ff" : "#0891b2",
-                  color: previewLoading ? "#0891b2" : "white",
-                  display: "flex", alignItems: "center", gap: 6,
-                }}>
-                {previewLoading
-                  ? <><RefreshCw size={12} className="spin" /> Generating…</>
-                  : <><Eye size={12} /> {showPreview ? "Regenerate" : "Generate Preview"}</>}
-              </button>
-              {showPreview && (
-                <button
-                  onClick={() => setShowPreview(false)}
-                  style={{ background: "none", border: "none", cursor: "pointer",
-                           fontSize: 12, color: "#64748b", padding: "4px 8px" }}>
-                  Hide
-                </button>
-              )}
-            </div>
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {/* SUB-STEP 2 — Silver: Refine + Dimensional Modeling                */}
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {deploySubStep === 2 && (
+            <>
+              <div className="card" style={{ padding: 20, borderLeft: "4px solid #2563eb" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 18 }}>🥈</span>
+                    Silver Notebook — ERL: <span style={{ color: "#2563eb" }}>Refine</span>
+                    <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 4 }}>Bronze → Conformed dim/fact (silver schema)</span>
+                  </h3>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                    <input type="checkbox" checked={opts.silver} onChange={e => setOpts(o => ({ ...o, silver: e.target.checked }))} />
+                    Enable Silver
+                  </label>
+                  {opts.silver && (
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[{ val: "pyspark", lbl: "PySpark", ico: Terminal }, { val: "sql", lbl: "SparkSQL", ico: Code }].map(({ val, lbl, ico: KIcon }) => (
+                        <button key={val} onClick={() => setNotebookTypes(p => ({ ...p, silver: val }))}
+                          style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer", border: "1px solid", display: "flex", alignItems: "center", gap: 3, background: notebookTypes.silver === val ? "#1e40af" : "white", color: notebookTypes.silver === val ? "white" : "#64748b", borderColor: notebookTypes.silver === val ? "#1e40af" : "#cbd5e1" }}>
+                          <KIcon size={9} /> {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {opts.silver && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+                    {[
+                      { key: "dedup",       label: "Remove Duplicates",  desc: "Deduplicate rows based on primary key"           },
+                      { key: "castTypes",   label: "Auto Type Casting",  desc: "Cast string→date/number where possible"          },
+                      { key: "surrogateKey",label: "Surrogate Key",      desc: "Add auto-increment integer surrogate key"        },
+                    ].map(({ key, label, desc }) => (
+                      <div key={key} style={{ padding: "12px 14px", borderRadius: 8, border: `2px solid ${silverErl[key] ? "#2563eb" : "#e2e8f0"}`, background: silverErl[key] ? "#eff6ff" : "white", cursor: "pointer" }} onClick={() => setSilverErl(v => ({ ...v, [key]: !v[key] }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <CheckCircle2 size={14} style={{ color: silverErl[key] ? "#2563eb" : "#cbd5e1" }} />
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+                        </div>
+                        <p style={{ fontSize: 11, color: "#64748b", margin: "4px 0 0" }}>{desc}</p>
+                      </div>
+                    ))}
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Null Handling</label>
+                      <select className="input" value={silverErl.nullHandling} onChange={e => setSilverErl(v => ({ ...v, nullHandling: e.target.value }))}>
+                        <option value="keep">Keep nulls as-is</option>
+                        <option value="drop_rows">Drop rows with nulls in key columns</option>
+                        <option value="fill_default">Fill nulls with defaults (0 / "Unknown")</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>SCD Strategy</label>
+                      <select className="input" value={silverErl.scdType} onChange={e => setSilverErl(v => ({ ...v, scdType: e.target.value }))}>
+                        <option value="type1">Type 1 — Overwrite (no history)</option>
+                        <option value="type2">Type 2 — Keep history (effective dates)</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-            {showPreview && (
-              <>
-                {/* Layer tabs */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-                  {["bronze", "silver", "gold", "pipeline"].filter(k => codePreview[k]).map(k => (
-                    <button key={k}
-                      onClick={() => setActiveCodeTab(k)}
-                      style={{
-                        padding: "5px 14px", fontSize: 11, fontWeight: 700,
-                        borderRadius: 7, cursor: "pointer", border: "1px solid",
-                        display: "flex", alignItems: "center", gap: 5,
-                        background:  activeCodeTab === k ? layerBg[k]    : "white",
-                        color:       activeCodeTab === k ? layerColor[k] : "#64748b",
-                        borderColor: activeCodeTab === k ? layerColor[k] : "#e2e8f0",
-                      }}>
-                      {k.charAt(0).toUpperCase() + k.slice(1)}
-                      {customCode[k]?.trim() && (
-                        <span style={{ width: 6, height: 6, borderRadius: "50%",
-                                       background: layerColor[k], display: "inline-block" }} />
-                      )}
-                      {k !== "pipeline" && (
-                        <span style={{ fontSize: 9, opacity: 0.8 }}>
-                          {notebookTypes[k] === "sql" ? "SparkSQL" : "PySpark"}
-                        </span>
-                      )}
+              {opts.silver && dimMappings.length > 0 && (
+                <div className="card" style={{ padding: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                    <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                      <Layers size={14} style={{ color: "#2563eb" }} />
+                      Dimensional Modeling — Target Tables
+                      <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>Industry-standard dim/fact naming</span>
+                    </h3>
+                    {standardLoaded && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "#f0fdf4", color: "#15803d", border: "1px solid #bbf7d0", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}><CheckCircle2 size={10} /> Standard SQL applied</span>}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 120px 1fr", gap: 8, padding: "6px 10px", background: "#f8fafc", borderRadius: 6, marginBottom: 6, fontSize: 10, fontWeight: 600, color: "#64748b" }}>
+                    <span>En</span><span>Source Table (Bronze)</span><span>Type</span><span>Target Table (Silver) — Business Name</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {dimMappings.map((m, idx) => (
+                      <div key={m.id} style={{ border: "1px solid", borderRadius: 8, overflow: "hidden", borderColor: m.enabled ? (m.type === "fact" ? "#bfdbfe" : "#bbf7d0") : "#e2e8f0", background: m.enabled ? (m.type === "fact" ? "#f0f9ff" : "#f0fdf4") : "#f8fafc", opacity: m.enabled ? 1 : 0.6 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 120px 1fr", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer" }} onClick={() => setDimExpanded(dimExpanded === m.id ? null : m.id)}>
+                          <input type="checkbox" checked={m.enabled} onClick={e => e.stopPropagation()} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, enabled: e.target.checked } : d))} />
+                          <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 600, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.sourceTable}</span>
+                          <div>
+                            <select value={m.type} onClick={e => e.stopPropagation()} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, type: e.target.value, targetName: (e.target.value === "fact" ? "fact_" : "dim_") + m.targetName.replace(/^(fact_|dim_)/, "") } : d))}
+                              style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, border: `1px solid ${m.type === "fact" ? "#93c5fd" : "#86efac"}`, background: m.type === "fact" ? "#dbeafe" : "#dcfce7", color: m.type === "fact" ? "#1d4ed8" : "#15803d", cursor: "pointer", fontWeight: 700 }}>
+                              <option value="dim">dim</option><option value="fact">fact</option>
+                            </select>
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                            <span style={{ fontSize: 12, fontFamily: "monospace", color: m.type === "fact" ? "#1d4ed8" : "#15803d", fontWeight: 600 }}>{m.targetName}</span>
+                            <span style={{ fontSize: 10, color: "#64748b" }}>{m.businessName}</span>
+                          </div>
+                        </div>
+                        {dimExpanded === m.id && (
+                          <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name</label>
+                              <input type="text" className="input" value={m.targetName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, targetName: e.target.value } : d))} style={{ fontFamily: "monospace", fontSize: 12 }} />
+                            </div>
+                            <div>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Business-Friendly Name</label>
+                              <input type="text" className="input" value={m.businessName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, businessName: e.target.value } : d))} />
+                            </div>
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Description</label>
+                              <input type="text" className="input" value={m.description ?? ""} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, description: e.target.value } : d))} placeholder="Brief description of this table" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setDimMappings(dm => [...dm, { id: `custom-${Date.now()}`, sourceTable: "", targetName: "dim_new_table", type: "dim", businessName: "New Table", description: "", enabled: true }])}>
+                      <Plus size={12} /> Add Mapping
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {tables.length > 0 && opts.silver && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Code size={14} style={{ color: "#2563eb" }} /> Silver SQL Transform
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — applied on top of default transform)</span>
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {tables.map(t => (
+                      <div key={t} style={{ border: "1px solid", borderColor: sqlConfig[t]?.silver?.trim() ? "#93c5fd" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: sqlConfig[t]?.silver?.trim() ? "#f0f9ff" : "white" }} onClick={() => setSqlExpandedTable(sqlExpandedTable === `s-${t}` ? null : `s-${t}`)}>
+                          <Table2 size={12} style={{ color: "#2563eb" }} />
+                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
+                          {sqlConfig[t]?.silver?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#dbeafe", color: "#1d4ed8", fontWeight: 600 }}>SQL set</span>}
+                          {standardSql.silver?.[t] && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#f0fdf4", color: "#15803d", fontWeight: 600 }}>Standard ✓</span>}
+                          {sqlExpandedTable === `s-${t}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
+                        </div>
+                        {sqlExpandedTable === `s-${t}` && (
+                          <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
+                            <textarea placeholder={`SELECT DISTINCT *\nFROM bronze.${t.toLowerCase()}\nWHERE 1=1  -- add cleansing filters`} value={sqlConfig[t]?.silver ?? ""} onChange={e => setSqlConfig(p => ({ ...p, [t]: { ...(p[t] ?? {}), silver: e.target.value } }))} style={{ width: "100%", height: 90, fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc" }} />
+                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
+                              <span style={{ fontSize: 11, color: "#94a3b8" }}>Transform SQL reading from bronze layer</span>
+                              <div style={{ display: "flex", gap: 8 }}>
+                                {standardSql.silver?.[t] && sqlConfig[t]?.silver !== standardSql.silver[t] && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], silver: standardSql.silver[t] } }))} style={{ fontSize: 11, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>↺ Reset to standard</button>}
+                                {sqlConfig[t]?.silver?.trim() && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], silver: "" } }))} style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {/* SUB-STEP 3 — Gold: Load / Aggregate / KPI Definitions             */}
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {deploySubStep === 3 && (
+            <>
+              <div className="card" style={{ padding: 20, borderLeft: "4px solid #b45309" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 18 }}>🥇</span>
+                    Gold Notebook — ERL: <span style={{ color: "#b45309" }}>Load &amp; Aggregate</span>
+                    <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 4 }}>Silver → Business KPIs (gold schema)</span>
+                  </h3>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                    <input type="checkbox" checked={opts.gold} onChange={e => setOpts(o => ({ ...o, gold: e.target.checked }))} />
+                    Enable Gold
+                  </label>
+                  {opts.gold && (
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[{ val: "pyspark", lbl: "PySpark", ico: Terminal }, { val: "sql", lbl: "SparkSQL", ico: Code }].map(({ val, lbl, ico: KIcon }) => (
+                        <button key={val} onClick={() => setNotebookTypes(p => ({ ...p, gold: val }))}
+                          style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer", border: "1px solid", display: "flex", alignItems: "center", gap: 3, background: notebookTypes.gold === val ? "#b45309" : "white", color: notebookTypes.gold === val ? "white" : "#64748b", borderColor: notebookTypes.gold === val ? "#b45309" : "#cbd5e1" }}>
+                          <KIcon size={9} /> {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {opts.gold && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Aggregation Granularity</label>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {["daily", "weekly", "monthly", "quarterly"].map(g => (
+                          <button key={g} onClick={() => setGoldErl(v => ({ ...v, granularity: g }))}
+                            style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer", border: "1px solid", background: goldErl.granularity === g ? "#fef9c3" : "white", color: goldErl.granularity === g ? "#854d0e" : "#64748b", borderColor: goldErl.granularity === g ? "#b45309" : "#e2e8f0" }}>
+                            {g.charAt(0).toUpperCase() + g.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <div style={{ padding: "12px 14px", borderRadius: 8, border: `2px solid ${goldErl.addCalendarDim ? "#b45309" : "#e2e8f0"}`, background: goldErl.addCalendarDim ? "#fef9c3" : "white", cursor: "pointer", flex: 1 }} onClick={() => setGoldErl(v => ({ ...v, addCalendarDim: !v.addCalendarDim }))}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <CheckCircle2 size={14} style={{ color: goldErl.addCalendarDim ? "#b45309" : "#cbd5e1" }} />
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>Add Calendar Dimension</span>
+                        </div>
+                        <p style={{ fontSize: 11, color: "#64748b", margin: "4px 0 0" }}>Generate dim_date with year, quarter, month, week, day attributes</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {opts.gold && goldKpis.length > 0 && (
+                <div className="card" style={{ padding: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                    <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                      <Zap size={14} style={{ color: "#b45309" }} />
+                      Gold KPI / Aggregate Tables
+                      <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>Industry-standard business metrics</span>
+                    </h3>
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "#fef9c3", color: "#854d0e", border: "1px solid #fde68a", fontWeight: 600 }}>
+                      {goldKpis.filter(k => k.enabled).length} KPIs enabled
+                    </span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 100px 1fr", gap: 8, padding: "6px 10px", background: "#f8fafc", borderRadius: 6, marginBottom: 6, fontSize: 10, fontWeight: 600, color: "#64748b" }}>
+                    <span>En</span><span>Target Table Name (Gold)</span><span>Granularity</span><span>Business Name</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {goldKpis.map((k, idx) => (
+                      <div key={k.id} style={{ border: "1px solid", borderRadius: 8, overflow: "hidden", borderColor: k.enabled ? "#fbbf24" : "#e2e8f0", background: k.enabled ? "#fffbeb" : "#f8fafc", opacity: k.enabled ? 1 : 0.6 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 100px 1fr", gap: 8, alignItems: "center", padding: "9px 10px", cursor: "pointer" }} onClick={() => setKpiExpanded(kpiExpanded === k.id ? null : k.id)}>
+                          <input type="checkbox" checked={k.enabled} onClick={e => e.stopPropagation()} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, enabled: e.target.checked } : ki))} />
+                          <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 600, color: "#854d0e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{k.targetTable}</span>
+                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: "#fef9c3", color: "#854d0e", fontWeight: 600, border: "1px solid #fde68a", textAlign: "center" }}>{k.granularity ?? goldErl.granularity}</span>
+                          <span style={{ fontSize: 12, color: "#374151", fontWeight: 600 }}>{k.businessName}</span>
+                        </div>
+                        {kpiExpanded === k.id && (
+                          <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name</label>
+                              <input type="text" className="input" value={k.targetTable} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, targetTable: e.target.value } : ki))} style={{ fontFamily: "monospace", fontSize: 12 }} />
+                            </div>
+                            <div>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Business Name</label>
+                              <input type="text" className="input" value={k.businessName} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, businessName: e.target.value } : ki))} />
+                            </div>
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Description / Aggregation Logic</label>
+                              <input type="text" className="input" value={k.description ?? ""} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, description: e.target.value } : ki))} placeholder="e.g. SUM revenue by customer, product, month" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setGoldKpis(kk => [...kk, { id: `custom-kpi-${Date.now()}`, targetTable: "fact_custom_kpi", businessName: "Custom KPI", granularity: goldErl.granularity, description: "", enabled: true }])}>
+                      <Plus size={12} /> Add KPI
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {tables.length > 0 && opts.gold && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Code size={14} style={{ color: "#b45309" }} /> Gold SQL Aggregation
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — custom aggregate query per table)</span>
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {tables.map(t => (
+                      <div key={t} style={{ border: "1px solid", borderColor: sqlConfig[t]?.gold?.trim() ? "#fbbf24" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: sqlConfig[t]?.gold?.trim() ? "#fffbeb" : "white" }} onClick={() => setSqlExpandedTable(sqlExpandedTable === `g-${t}` ? null : `g-${t}`)}>
+                          <Table2 size={12} style={{ color: "#b45309" }} />
+                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
+                          {sqlConfig[t]?.gold?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#fef9c3", color: "#854d0e", fontWeight: 600 }}>SQL set</span>}
+                          {standardSql.gold?.[t] && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#f0fdf4", color: "#15803d", fontWeight: 600 }}>Standard ✓</span>}
+                          {sqlExpandedTable === `g-${t}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
+                        </div>
+                        {sqlExpandedTable === `g-${t}` && (
+                          <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
+                            <textarea placeholder={`SELECT date_trunc('month', created_date) AS month,\n       COUNT(*) AS total_count,\n       SUM(amount) AS total_amount\nFROM silver.${t.toLowerCase()}\nGROUP BY 1\nORDER BY 1`} value={sqlConfig[t]?.gold ?? ""} onChange={e => setSqlConfig(p => ({ ...p, [t]: { ...(p[t] ?? {}), gold: e.target.value } }))} style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc" }} />
+                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
+                              <span style={{ fontSize: 11, color: "#94a3b8" }}>Aggregation SQL reading from silver layer</span>
+                              <div style={{ display: "flex", gap: 8 }}>
+                                {standardSql.gold?.[t] && sqlConfig[t]?.gold !== standardSql.gold[t] && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], gold: standardSql.gold[t] } }))} style={{ fontSize: 11, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>↺ Reset to standard</button>}
+                                {sqlConfig[t]?.gold?.trim() && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], gold: "" } }))} style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {/* SUB-STEP 4 — Deploy: Review, Code Preview & Publish               */}
+          {/* ══════════════════════════════════════════════════════════════════ */}
+          {deploySubStep === 4 && (
+            <>
+              <div className="card" style={{ padding: 20 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                  <ListChecks size={14} style={{ color: "var(--color-primary)" }} /> Deployment Summary
+                </h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                  {[
+                    { layer: "bronze", emoji: "🥉", color: "#92400e", border: "#fbbf24", bg: "#fffbeb", enabled: opts.bronze,
+                      details: [
+                        `Mode: ${bronzeErl.loadMode === "full" ? "Full Refresh" : "Incremental"}`,
+                        bronzeErl.loadMode === "incremental" && bronzeErl.watermarkCol ? `Watermark: ${bronzeErl.watermarkCol}` : null,
+                        `Kernel: ${notebookTypes.bronze === "sql" ? "SparkSQL" : "PySpark"}`,
+                        `Tables: ${tables.length}`,
+                      ].filter(Boolean)
+                    },
+                    { layer: "silver", emoji: "🥈", color: "#1d4ed8", border: "#93c5fd", bg: "#eff6ff", enabled: opts.silver,
+                      details: [
+                        `Dedup: ${silverErl.dedup ? "Yes" : "No"}`,
+                        `SCD: Type ${silverErl.scdType === "type1" ? "1" : "2"}`,
+                        `Dim tables: ${dimMappings.filter(m => m.enabled && m.type === "dim").length}`,
+                        `Fact tables: ${dimMappings.filter(m => m.enabled && m.type === "fact").length}`,
+                      ]
+                    },
+                    { layer: "gold", emoji: "🥇", color: "#854d0e", border: "#fde68a", bg: "#fef9c3", enabled: opts.gold,
+                      details: [
+                        `Granularity: ${goldErl.granularity}`,
+                        `KPI tables: ${goldKpis.filter(k => k.enabled).length}`,
+                        `Calendar dim: ${goldErl.addCalendarDim ? "Yes" : "No"}`,
+                      ]
+                    },
+                  ].map(({ layer, emoji, color, border, bg, enabled, details }) => (
+                    <div key={layer} style={{ padding: "12px 14px", borderRadius: 8, border: `1px solid ${enabled ? border : "#e2e8f0"}`, background: enabled ? bg : "#f8fafc", opacity: enabled ? 1 : 0.5 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color, display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                        <span>{emoji}</span> {layer.charAt(0).toUpperCase() + layer.slice(1)} Layer
+                        {enabled ? <CheckCircle2 size={12} style={{ color: "#16a34a", marginLeft: "auto" }} /> : <XCircle size={12} style={{ color: "#94a3b8", marginLeft: "auto" }} />}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b", display: "flex", flexDirection: "column", gap: 3 }}>
+                        {details.map((d, i) => <span key={i}>{d}</span>)}
+                      </div>
+                    </div>
                   ))}
                 </div>
-
-                {/* Code editor toolbar */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  {isCustomised && (
-                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20,
-                                   background: "#fef3c7", color: "#92400e",
-                                   border: "1px solid #fde68a", fontWeight: 600 }}>
-                      ✏ Modified
-                    </span>
-                  )}
-                  <span style={{ flex: 1 }} />
-                  <button
-                    onClick={() => navigator.clipboard.writeText(activeCode).then(() => toast.success("Copied!"))}
-                    style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6,
-                             cursor: "pointer", border: "1px solid #e2e8f0",
-                             background: "white", color: "#64748b",
-                             display: "flex", alignItems: "center", gap: 4 }}>
-                    <Copy size={11} /> Copy
-                  </button>
-                  {isCustomised && (
-                    <button
-                      onClick={() => setCustomCode(prev => ({ ...prev, [activeCodeTab]: "" }))}
-                      style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6,
-                               cursor: "pointer", border: "1px solid #fecaca",
-                               background: "#fef2f2", color: "#b91c1c" }}>
-                      Reset to auto-generated
-                    </button>
-                  )}
+                <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, border: `1px solid ${opts.pipeline ? "#c4b5fd" : "#e2e8f0"}`, background: opts.pipeline ? "#f5f3ff" : "#f8fafc" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", flex: 1 }}>
+                    <input type="checkbox" checked={opts.pipeline} onChange={e => setOpts(o => ({ ...o, pipeline: e.target.checked }))} />
+                    <GitBranch size={14} style={{ color: "#7c3aed" }} />
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>Create Data Pipeline</span>
+                      <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>Orchestrates Bronze → Silver → Gold in sequence</span>
+                    </div>
+                  </label>
                 </div>
+              </div>
 
-                <textarea
-                  value={activeCode}
-                  onChange={e => setCustomCode(prev => ({ ...prev, [activeCodeTab]: e.target.value }))}
-                  spellCheck={false}
-                  style={{
-                    width: "100%", height: 380, fontFamily: "'Fira Code', 'Courier New', monospace",
-                    fontSize: 12, padding: 14, borderRadius: 8, resize: "vertical",
-                    border: "1px solid", lineHeight: 1.6,
-                    borderColor: isCustomised ? "#fde68a" : "#cbd5e1",
-                    background:  isCustomised ? "#fffbeb" : "#0f172a",
-                    color:       isCustomised ? "#1e293b"  : "#e2e8f0",
-                    outline: "none",
-                  }}
-                />
-                <p style={{ fontSize: 11, color: "#94a3b8", margin: "6px 0 0" }}>
-                  Edit the code above before deploying. Changes apply only to this deployment.
-                  {" "}Separator between cells: <code style={{ fontSize: 10 }}># ─── Next Cell ───</code>
-                </p>
-              </>
+              <div className="card" style={{ padding: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: showPreview ? 16 : 0 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0, display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                    <FileCode size={15} style={{ color: "#0891b2" }} /> Preview &amp; Customize Notebook Code
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(auto-populated · editable before deploy)</span>
+                  </h3>
+                  <button onClick={fetchPreview} disabled={previewLoading} style={{ padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid #0891b2", background: previewLoading ? "#f0f9ff" : "#0891b2", color: previewLoading ? "#0891b2" : "white", display: "flex", alignItems: "center", gap: 6 }}>
+                    {previewLoading ? <><RefreshCw size={12} className="spin" /> Generating…</> : <><Eye size={12} /> {showPreview ? "Regenerate" : "Generate Preview"}</>}
+                  </button>
+                  {showPreview && <button onClick={() => setShowPreview(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#64748b", padding: "4px 8px" }}>Hide</button>}
+                </div>
+                {showPreview && (
+                  <>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                      {["bronze", "silver", "gold", "pipeline"].filter(k => codePreview[k]).map(k => (
+                        <button key={k} onClick={() => setActiveCodeTab(k)} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, borderRadius: 7, cursor: "pointer", border: "1px solid", display: "flex", alignItems: "center", gap: 5, background: activeCodeTab === k ? layerBg[k] : "white", color: activeCodeTab === k ? layerColor[k] : "#64748b", borderColor: activeCodeTab === k ? layerColor[k] : "#e2e8f0" }}>
+                          {k.charAt(0).toUpperCase() + k.slice(1)}
+                          {customCode[k]?.trim() && <span style={{ width: 6, height: 6, borderRadius: "50%", background: layerColor[k], display: "inline-block" }} />}
+                          {k !== "pipeline" && <span style={{ fontSize: 9, opacity: 0.8 }}>{notebookTypes[k] === "sql" ? "SparkSQL" : "PySpark"}</span>}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      {isCustomised && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", fontWeight: 600 }}>✏ Modified</span>}
+                      <span style={{ flex: 1 }} />
+                      <button onClick={() => navigator.clipboard.writeText(activeCode).then(() => toast.success("Copied!"))} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, cursor: "pointer", border: "1px solid #e2e8f0", background: "white", color: "#64748b", display: "flex", alignItems: "center", gap: 4 }}><Copy size={11} /> Copy</button>
+                      {isCustomised && <button onClick={() => setCustomCode(p => { const n = { ...p }; delete n[activeCodeTab]; return n; })} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, cursor: "pointer", border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c" }}>Reset to auto-generated</button>}
+                    </div>
+                    <textarea value={activeCode} onChange={e => setCustomCode(prev => ({ ...prev, [activeCodeTab]: e.target.value }))} spellCheck={false}
+                      style={{ width: "100%", height: 360, fontFamily: "'Fira Code', 'Courier New', monospace", fontSize: 12, padding: 14, borderRadius: 8, resize: "vertical", border: "1px solid", lineHeight: 1.6, borderColor: isCustomised ? "#fde68a" : "#cbd5e1", background: isCustomised ? "#fffbeb" : "#0f172a", color: isCustomised ? "#1e293b" : "#e2e8f0", outline: "none" }} />
+                    <p style={{ fontSize: 11, color: "#94a3b8", margin: "6px 0 0" }}>
+                      Edit code before deploying. Separator between cells: <code style={{ fontSize: 10 }}># ─── Next Cell ───</code>
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── Sub-step navigation footer ── */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4 }}>
+            {deploySubStep === 1
+              ? <button className="btn-ghost" onClick={onBack}><ChevronLeft size={15} /> Back</button>
+              : <button className="btn-ghost" onClick={() => setDeploySubStep(s => s - 1)}><ChevronLeft size={15} /> Back</button>
+            }
+            {deploySubStep < 4 ? (
+              <button className="btn-primary" onClick={() => setDeploySubStep(s => s + 1)}>
+                {deploySubStep === 1 ? "Configure Silver" : deploySubStep === 2 ? "Configure Gold" : "Review & Deploy"} <ChevronRight size={15} />
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                disabled={deployMutation.isPending || !Object.values(opts).some(Boolean)}
+                onClick={() => deployMutation.mutate()}
+                style={{ fontSize: 14, padding: "10px 28px" }}
+              >
+                {deployMutation.isPending
+                  ? <><RefreshCw size={14} className="spin" /> Deploying to Fabric…</>
+                  : <><Play size={14} /> Deploy to Microsoft Fabric</>}
+              </button>
             )}
-          </div>
-
-          {/* ── Deploy button ── */}
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <button className="btn-ghost" onClick={onBack}><ChevronLeft size={15} /> Back</button>
-            <button
-              className="btn-primary"
-              disabled={deployMutation.isPending || !Object.values(opts).some(Boolean)}
-              onClick={() => deployMutation.mutate()}
-              style={{ fontSize: 14, padding: "10px 24px" }}
-            >
-              {deployMutation.isPending
-                ? <><RefreshCw size={14} className="spin" /> Deploying to Fabric…</>
-                : <><Play size={14} /> Deploy to Microsoft Fabric</>}
-            </button>
           </div>
         </>
       )}
