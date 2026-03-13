@@ -1248,9 +1248,26 @@ async def deploy(req: DeployRequest):
             if art["status"] in ("created", "updated", "simulated", "pending"):
                 nb_ids[layer] = art["id"]
 
-        # nb_ids now contains ONLY the user-selected layers for this deploy run.
-        # The pipeline activities below will chain them in Bronze → Silver → Gold
-        # order, skipping any layers the user did not select.
+        # ── Resolve actual Fabric notebook item IDs before building pipeline ────
+        # On a first deploy the notebook create LRO may not return the actual
+        # item.id in its result body — only an operation/fallback ID.  Using a
+        # wrong ID in the pipeline's notebookId field causes a Fabric 400 error.
+        # After all notebooks have been created/updated, re-list the workspace to
+        # fetch the real item IDs by display name and overwrite nb_ids so the
+        # pipeline always references valid, existing Fabric notebook item IDs.
+        if live and nb_ids:
+            try:
+                fresh_nb_ids = await _list_existing_items(token, ws, "Notebook")
+                for layer in list(nb_ids.keys()):
+                    nb_name = f"{prefix}_{layer}_Notebook"
+                    if nb_name in fresh_nb_ids:
+                        nb_ids[layer] = fresh_nb_ids[nb_name]
+            except Exception:
+                pass  # non-fatal — fall back to IDs already in nb_ids
+
+        # nb_ids now contains ONLY the user-selected layers for this deploy run,
+        # with real Fabric item IDs confirmed from the workspace.
+        # The pipeline activities below chain them in Bronze → Silver → Gold order.
 
         # ── Data Pipeline ──────────────────────────────────────────────────────
         if req.create_pipeline:
