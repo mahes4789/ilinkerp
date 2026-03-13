@@ -386,6 +386,39 @@ async def _fabric_post(token: str, url: str, payload: dict) -> dict:
         return r.json() if r.text else {}
 
 
+async def _fabric_update_definition(
+    token: str, ws: str, endpoint: str, item_id: str, definition: dict
+) -> dict:
+    """
+    POST .../updateDefinition for an existing Fabric Notebook or DataPipeline.
+    Reuses _fabric_post() which already handles 200 (immediate) and 202 (LRO).
+    """
+    url = f"{FABRIC_API}/workspaces/{ws}/{endpoint}/{item_id}/updateDefinition"
+    return await _fabric_post(token, url, {"definition": definition})
+
+
+async def _list_existing_items(token: str, ws: str, *types: str) -> dict[str, str]:
+    """
+    Returns {displayName: itemId} for all workspace items matching the given
+    types (e.g. "Notebook", "DataPipeline").
+    Non-fatal: silently returns {} on any error so deploy is never aborted by
+    a failed list call — _make() will fall back to always-create mode.
+    """
+    result: dict[str, str] = {}
+    try:
+        for t in types:
+            url  = f"{FABRIC_API}/workspaces/{ws}/items?type={t}"
+            data = await _fabric_get(token, url)
+            for item in data.get("value", []):
+                name = item.get("displayName", "")
+                iid  = item.get("id", "")
+                if name and iid:
+                    result[name] = iid
+    except Exception:
+        pass  # non-fatal — caller falls back to create
+    return result
+
+
 # ── Notebook / pipeline cell helpers ──────────────────────────────────────────
 # Fabric kernel specs by type
 _KERNEL_SPECS: dict[str, dict] = {
@@ -1084,37 +1117,59 @@ async def deploy(req: DeployRequest):
     artifacts: list[dict] = []
     nb_ids:    dict[str, str] = {}
 
+    # Pre-fetch existing workspace items so _make() can upsert (update if
+    # found, create if not). Non-fatal: {} means always-create fallback.
+    existing_ids: dict[str, str] = {}
+    if live:
+        existing_ids = await _list_existing_items(
+            token, ws, "Notebook", "DataPipeline"
+        )
+
     async def _make(name: str, item_type: str, definition: dict) -> dict:
         if live:
             try:
-                # Use type-specific endpoint (notebooks / dataPipelines)
                 endpoint = _FABRIC_ITEM_ENDPOINTS.get(item_type, "items")
-                url      = f"{FABRIC_API}/workspaces/{ws}/{endpoint}"
-                # Type-specific endpoints only need displayName + definition
-                body: dict = {"displayName": name, "definition": definition}
-                if endpoint == "items":
-                    body["type"] = item_type  # generic /items needs type field
-                result = await _fabric_post(token, url, body)
 
-                # LRO may time out and return status="pending" rather than raising
-                if result.get("status") == "pending":
+                if name in existing_ids:
+                    # ── UPDATE existing item ──────────────────────────────────
+                    item_id = existing_ids[name]
+                    result  = await _fabric_update_definition(
+                        token, ws, endpoint, item_id, definition
+                    )
+                    if result.get("status") == "pending":
+                        return {
+                            "name":   name, "type": item_type, "id": item_id,
+                            "status": "pending", "live": True,
+                            "note":   result.get("note", "LRO still running — check Fabric workspace"),
+                        }
                     return {
-                        "name":   name, "type": item_type,
-                        "id":     result.get("id", str(uuid.uuid4())),
-                        "status": "pending",
-                        "live":   True,
-                        "note":   result.get("note", "LRO still running — check Fabric workspace"),
+                        "name":       name, "type": item_type, "id": item_id,
+                        "status":     "updated", "live": True,
+                        "verify_url": f"/api/fabric/workspaces/{ws}/items",
                     }
 
-                item_id = result.get("id", str(uuid.uuid4()))
-                return {
-                    "name":       name,
-                    "type":       item_type,
-                    "id":         item_id,
-                    "status":     "created",
-                    "live":       True,
-                    "verify_url": f"/api/fabric/workspaces/{ws}/items",
-                }
+                else:
+                    # ── CREATE new item ───────────────────────────────────────
+                    url  = f"{FABRIC_API}/workspaces/{ws}/{endpoint}"
+                    body: dict = {"displayName": name, "definition": definition}
+                    if endpoint == "items":
+                        body["type"] = item_type  # generic /items needs type
+                    result = await _fabric_post(token, url, body)
+
+                    if result.get("status") == "pending":
+                        return {
+                            "name":   name, "type": item_type,
+                            "id":     result.get("id", str(uuid.uuid4())),
+                            "status": "pending", "live": True,
+                            "note":   result.get("note", "LRO still running — check Fabric workspace"),
+                        }
+                    item_id = result.get("id", str(uuid.uuid4()))
+                    return {
+                        "name":       name, "type": item_type, "id": item_id,
+                        "status":     "created", "live": True,
+                        "verify_url": f"/api/fabric/workspaces/{ws}/items",
+                    }
+
             except HTTPException as exc:
                 detail = exc.detail if hasattr(exc, "detail") else str(exc)
                 return {

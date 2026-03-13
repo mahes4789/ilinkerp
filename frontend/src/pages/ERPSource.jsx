@@ -2230,7 +2230,7 @@ function StepDeploy({ wizard, onBack }) {
                 <>
                   <tr key={`row-${i}`} style={{
                     borderBottom: expandedErrors.has(i) ? "none" : "1px solid #f1f5f9",
-                    background: a.status === "failed" ? "#fff8f8" :
+                    background: a.status === "failed"  ? "#fff8f8" :
                                 a.status === "pending" ? "#fffbeb" : "transparent",
                   }}>
                     <td style={{ padding: "10px 16px", fontFamily: "monospace",
@@ -2244,11 +2244,13 @@ function StepDeploy({ wizard, onBack }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span className={
                           a.status === "created"   ? "badge badge-green" :
+                          a.status === "updated"   ? "badge badge-blue" :
                           a.status === "pending"   ? "badge badge-amber" :
                           a.status === "simulated" ? "badge badge-amber" :
                                                      "badge badge-red"
                         } style={{ fontSize: 10 }}>
-                          {a.status}{a.http_status ? ` · HTTP ${a.http_status}` : ""}
+                          {a.status === "updated" ? "↑ updated" : a.status}
+                          {a.http_status ? ` · HTTP ${a.http_status}` : ""}
                         </span>
                         {a.error && (
                           <>
