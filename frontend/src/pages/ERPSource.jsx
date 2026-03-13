@@ -457,11 +457,21 @@ function StepConnect({ wizard, setWizard, onNext, onBack }) {
         Connection details (except password) are saved for quick reuse. Passwords are never stored.
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button className="btn-ghost" onClick={onBack}><ChevronLeft size={15} /> Back</button>
-        <button className="btn-primary" disabled={!allReq} onClick={onNext}>
-          Discover Tables <ChevronRight size={15} />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            className="btn-ghost"
+            onClick={onNext}
+            style={{ fontSize: 13, color: "#64748b" }}
+            title="Skip connection — use standard industry tables for this ERP/module"
+          >
+            Skip — use standard tables
+          </button>
+          <button className="btn-primary" disabled={!allReq} onClick={onNext}>
+            Discover Tables <ChevronRight size={15} />
+          </button>
+        </div>
       </div>
     </div>
   );
