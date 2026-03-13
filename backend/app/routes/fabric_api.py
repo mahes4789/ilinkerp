@@ -1241,8 +1241,10 @@ async def deploy(req: DeployRequest):
                            "payload": nb64, "payloadType": "InlineBase64"}],
             })
             artifacts.append(art)
-            # Only register notebooks that actually exist (or are simulated) in Fabric
-            if art["status"] in ("created", "simulated", "pending"):
+            # Register notebook ID so the pipeline can reference it.
+            # Covers: created (new), updated (re-deploy), simulated (no token),
+            # pending (LRO still running — ID still valid for pipeline wiring).
+            if art["status"] in ("created", "updated", "simulated", "pending"):
                 nb_ids[layer] = art["id"]
 
         # ── Data Pipeline ──────────────────────────────────────────────────────
