@@ -660,3 +660,550 @@ async def save_erp_config(body: dict):
 async def list_erp_configs():
     """Return saved ERP connection configs."""
     return {"configs": list(_erp_configs.values()), "total": len(_erp_configs)}
+
+
+# ── Field-to-Field Cross-ERP Comparison Data ──────────────────────────────────
+# Logical field mappings: for each module, maps canonical field names → ERP-specific columns.
+# Each mapping entry: {table, column, type, is_key, nullable}
+
+_FIELD_COMPARISON: dict[str, dict] = {
+    "GL": {
+        "label": "General Ledger",
+        "description": "Core accounting journal entries, balances and chart of accounts",
+        "fields": [
+            {
+                "logical_name": "Journal Entry ID",
+                "description": "Unique identifier for the journal entry header",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "JE_HEADER_ID",      "type": "NUMBER(15)",    "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "JE_HEADER_ID",      "type": "NUMBER(15)",    "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "BELNR",             "type": "CHAR(10)",      "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BELNR",             "type": "CHAR(10)",      "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "LedgerJournalTable",      "column": "JOURNALNUM",        "type": "VARCHAR(20)",   "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Document No.",      "type": "CODE(20)",      "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "ID",                "type": "INTEGER",       "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Journal_Number",    "type": "VARCHAR(50)",   "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Accounting Date",
+                "description": "The date the journal entry affects the accounting books",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "DEFAULT_EFFECTIVE_DATE", "type": "DATE",      "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "DEFAULT_EFFECTIVE_DATE", "type": "DATE",      "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "BUDAT",             "type": "DATS(8)",       "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BUDAT",             "type": "DATS(8)",       "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "TRANSDATE",         "type": "DATE",          "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Posting Date",      "type": "DATE",          "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TRANDATE",          "type": "DATE",          "is_key": False, "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Accounting_Date",   "type": "DATE",          "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Accounting Period",
+                "description": "Fiscal period the journal entry is posted to",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "PERIOD_NAME",       "type": "VARCHAR2(15)",  "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "PERIOD_NAME",       "type": "VARCHAR2(15)",  "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "POPER",            "type": "NUMC(3)",        "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "MONAT",            "type": "NUMC(2)",        "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "LedgerJournalTable",      "column": "PERIODDATEFROM",   "type": "DATE",           "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Posting Date",     "type": "DATE",           "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "POSTINGPERIOD",    "type": "INTEGER",        "is_key": False, "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Accounting_Period", "type": "VARCHAR(20)",   "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Company / Entity Code",
+                "description": "Company or legal entity for the journal entry",
+                "category": "Organisation",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_LEDGERS",              "column": "LEDGER_ID",         "type": "NUMBER(15)",    "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "GL_LEDGERS",              "column": "LEDGER_ID",         "type": "NUMBER(15)",    "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "BUKRS",             "type": "CHAR(4)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BUKRS",             "type": "CHAR(4)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "LedgerJournalTable",      "column": "DATAAREAID",        "type": "VARCHAR(4)",     "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Company Name",      "type": "TEXT(30)",       "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "SUBSIDIARY",        "type": "INTEGER",        "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Company",           "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "GL Account Code",
+                "description": "Natural account / chart of accounts segment",
+                "category": "Account",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_CODE_COMBINATIONS",    "column": "SEGMENT1",          "type": "VARCHAR2(25)",   "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_CODE_COMBINATIONS",    "column": "SEGMENT1",          "type": "VARCHAR2(25)",   "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "RACCT",             "type": "CHAR(10)",        "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "HKONT",             "type": "CHAR(10)",        "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "MainAccount",             "column": "DISPLAYVALUE",      "type": "VARCHAR(20)",    "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Account",             "column": "No.",               "type": "CODE(20)",        "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "ACCOUNT",                 "column": "ACCTNUMBER",        "type": "VARCHAR(10)",     "is_key": False, "nullable": False},
+                    "workday":         {"table": "Ledger_Account",          "column": "Account_ID",        "type": "VARCHAR(30)",     "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Debit Amount",
+                "description": "Debit (Dr) amount in functional currency",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_LINES",             "column": "ENTERED_DR",        "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "GL_JE_LINES",             "column": "ENTERED_DR",        "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "HSL",               "type": "CURR(23,2)",      "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "DMBTR",             "type": "CURR(13,2)",      "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "AMOUNTCURDEBIT",    "type": "REAL",            "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Debit Amount",      "type": "DECIMAL(38,20)",  "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION_LINES",       "column": "DEBITAMOUNT",       "type": "NUMERIC(28,2)",   "is_key": False, "nullable": True},
+                    "workday":         {"table": "Journal_Line",            "column": "Debit_Amount",      "type": "DECIMAL(18,6)",   "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Credit Amount",
+                "description": "Credit (Cr) amount in functional currency",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_LINES",             "column": "ENTERED_CR",        "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "GL_JE_LINES",             "column": "ENTERED_CR",        "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "KSL",               "type": "CURR(23,2)",      "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "WRBTR",             "type": "CURR(13,2)",      "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "AMOUNTCURCREDIT",   "type": "REAL",            "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Credit Amount",     "type": "DECIMAL(38,20)",  "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION_LINES",       "column": "CREDITAMOUNT",      "type": "NUMERIC(28,2)",   "is_key": False, "nullable": True},
+                    "workday":         {"table": "Journal_Line",            "column": "Credit_Amount",     "type": "DECIMAL(18,6)",   "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Currency Code",
+                "description": "Transaction currency (ISO 4217 code)",
+                "category": "Currency",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "CURRENCY_CODE",     "type": "VARCHAR2(15)",   "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "CURRENCY_CODE",     "type": "VARCHAR2(15)",   "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "RHCUR",            "type": "CUKY(5)",         "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "WAERS",            "type": "CUKY(5)",         "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "CURRENCYCODE",     "type": "VARCHAR(3)",      "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Currency Code",    "type": "CODE(10)",        "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "CURRENCY",         "type": "INTEGER",         "is_key": False, "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Currency",         "type": "VARCHAR(3)",      "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Journal Description",
+                "description": "Free-text description of the journal entry",
+                "category": "Description",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "DESCRIPTION",       "type": "VARCHAR2(240)",  "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "DESCRIPTION",       "type": "VARCHAR2(240)",  "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "SGTXT",            "type": "CHAR(50)",        "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "SGTXT",            "type": "CHAR(50)",        "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "TXT",              "type": "VARCHAR(30)",     "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Description",      "type": "TEXT(100)",       "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "MEMO",             "type": "VARCHAR(999)",    "is_key": False, "nullable": True},
+                    "workday":         {"table": "Journal_Entry",           "column": "Memo",             "type": "VARCHAR(4000)",   "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Cost Center",
+                "description": "Cost centre / profit centre segment",
+                "category": "Organisation",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_CODE_COMBINATIONS",    "column": "SEGMENT2",          "type": "VARCHAR2(25)",   "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "GL_CODE_COMBINATIONS",    "column": "SEGMENT2",          "type": "VARCHAR2(25)",   "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "KOSTL",            "type": "CHAR(10)",        "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "KOSTL",            "type": "CHAR(10)",        "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "DIMENSIONDISPLAYVALUE", "type": "VARCHAR(255)", "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Department Code",  "type": "CODE(20)",        "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION_LINES",       "column": "DEPARTMENT",       "type": "INTEGER",         "is_key": False, "nullable": True},
+                    "workday":         {"table": "Journal_Line",            "column": "Cost_Center",      "type": "VARCHAR(50)",     "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Created By User",
+                "description": "User who created the journal entry",
+                "category": "Audit",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "CREATED_BY",        "type": "VARCHAR2(64)",   "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "CREATED_BY",        "type": "NUMBER(15)",     "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "USNAM",            "type": "CHAR(12)",        "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "USNAM",            "type": "CHAR(12)",        "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTable",      "column": "CREATEDBY",        "type": "VARCHAR(8)",      "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "User ID",          "type": "CODE(50)",        "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "CREATEDBY",        "type": "INTEGER",         "is_key": False, "nullable": True},
+                    "workday":         {"table": "Journal_Entry",           "column": "Entered_By",       "type": "VARCHAR(100)",    "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Posted / Unposted Status",
+                "description": "Whether the journal has been posted to the GL",
+                "category": "Status",
+                "mappings": {
+                    "oracle_fusion":   {"table": "GL_JE_HEADERS",          "column": "STATUS",            "type": "VARCHAR2(1)",    "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "GL_JE_HEADERS",          "column": "STATUS",            "type": "VARCHAR2(1)",    "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "ACDOCA",                  "column": "BSTAT",            "type": "CHAR(1)",         "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BSTAT",            "type": "CHAR(1)",         "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTable",      "column": "POSTED",           "type": "ENUM",            "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "G/L Entry",               "column": "Open",             "type": "BOOLEAN",         "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "STATUS",           "type": "VARCHAR(10)",     "is_key": False, "nullable": False},
+                    "workday":         {"table": "Journal_Entry",           "column": "Status",           "type": "VARCHAR(50)",     "is_key": False, "nullable": False},
+                },
+            },
+        ],
+    },
+    "AR": {
+        "label": "Accounts Receivable",
+        "description": "Customer invoices, receipts and collections",
+        "fields": [
+            {
+                "logical_name": "Invoice Number",
+                "description": "Unique identifier/number for the customer invoice",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TRX_NUMBER",        "type": "VARCHAR2(20)",   "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TRX_NUMBER",        "type": "VARCHAR2(20)",   "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BELNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BELNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "INVOICEID",         "type": "VARCHAR(20)",    "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "Sales Invoice Header",    "column": "No.",               "type": "CODE(20)",        "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TRANID",            "type": "VARCHAR(64)",    "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Invoice_Number",    "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Customer ID",
+                "description": "Unique identifier for the customer/party",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "HZ_CUST_ACCOUNTS",        "column": "CUST_ACCOUNT_ID",   "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "HZ_CUST_ACCOUNTS",        "column": "CUST_ACCOUNT_ID",   "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "KNA1",                    "column": "KUNNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "KNA1",                    "column": "KUNNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "CustTable",               "column": "ACCOUNTNUM",        "type": "VARCHAR(20)",    "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "Customer",                "column": "No.",               "type": "CODE(20)",        "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "CUSTOMER",                "column": "ID",                "type": "INTEGER",        "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Customer",                "column": "Customer_ID",       "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Invoice Date",
+                "description": "Date the invoice was created/issued",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TRX_DATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TRX_DATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BLDAT",             "type": "DATS(8)",         "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BLDAT",             "type": "DATS(8)",         "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "INVOICEDATE",       "type": "DATE",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Sales Invoice Header",    "column": "Document Date",     "type": "DATE",           "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TRANDATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Invoice_Date",      "type": "DATE",           "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Due Date",
+                "description": "Payment due date based on payment terms",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "DUE_DATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "DUE_DATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BSID",                    "column": "FAEDT",             "type": "DATS(8)",         "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSID",                    "column": "FAEDT",             "type": "DATS(8)",         "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "DUEDATE",           "type": "DATE",           "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Sales Invoice Header",    "column": "Due Date",          "type": "DATE",           "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "DUEDATE",           "type": "DATE",           "is_key": False, "nullable": True},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Due_Date",          "type": "DATE",           "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Invoice Amount",
+                "description": "Total invoice amount in transaction currency",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "RA_CUSTOMER_TRX_ALL",     "column": "INVOICE_CURRENCY_CODE", "type": "VARCHAR2(15)", "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "AMOUNT_DUE_ORIGINAL", "type": "NUMBER",       "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "INVOICEAMOUNT",     "type": "REAL",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Sales Invoice Header",    "column": "Amount Including VAT", "type": "DECIMAL(38,20)", "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TOTAL",             "type": "NUMERIC(28,2)",  "is_key": False, "nullable": False},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Total_Amount",      "type": "DECIMAL(18,6)",  "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Outstanding Balance",
+                "description": "Amount remaining unpaid on the invoice",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "AMOUNT_DUE_REMAINING", "type": "NUMBER",     "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "AMOUNT_DUE_REMAINING", "type": "NUMBER",     "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BSID",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSID",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "REMAINAMOUNT",      "type": "REAL",           "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Cust. Ledger Entry",      "column": "Remaining Amount",  "type": "DECIMAL(38,20)", "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "AMOUNTREMAINING",   "type": "NUMERIC(28,2)",  "is_key": False, "nullable": True},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Unpaid_Amount",     "type": "DECIMAL(18,6)",  "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Payment Terms",
+                "description": "Payment terms code (e.g. NET30, 2/10 NET30)",
+                "category": "Terms",
+                "mappings": {
+                    "oracle_fusion":   {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TERM_ID",           "type": "NUMBER(15)",     "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "RA_CUSTOMER_TRX_ALL",     "column": "TERM_ID",           "type": "NUMBER(15)",     "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "KNA1",                    "column": "ZTERM",             "type": "CHAR(4)",         "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "KNA1",                    "column": "ZTERM",             "type": "CHAR(4)",         "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "CustTable",               "column": "PAYMTERMID",        "type": "VARCHAR(10)",    "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Customer",                "column": "Payment Terms Code", "type": "CODE(10)",      "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "CUSTOMER",                "column": "TERMS",             "type": "INTEGER",        "is_key": False, "nullable": True},
+                    "workday":         {"table": "Customer",                "column": "Payment_Terms",     "type": "VARCHAR(50)",    "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Invoice Status",
+                "description": "Current status of the invoice (Open, Closed, Void, etc.)",
+                "category": "Status",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "STATUS",            "type": "VARCHAR2(15)",   "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AR_PAYMENT_SCHEDULES_ALL","column": "STATUS",            "type": "VARCHAR2(15)",   "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BSTAT",             "type": "CHAR(1)",         "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BSTAT",             "type": "CHAR(1)",         "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "CustInvoiceJour",         "column": "STATUS",            "type": "ENUM",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Sales Invoice Header",    "column": "Status",            "type": "OPTION",         "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "STATUS",            "type": "VARCHAR(10)",    "is_key": False, "nullable": False},
+                    "workday":         {"table": "Customer_Invoice",        "column": "Invoice_Status",    "type": "VARCHAR(50)",    "is_key": False, "nullable": False},
+                },
+            },
+        ],
+    },
+    "AP": {
+        "label": "Accounts Payable",
+        "description": "Supplier invoices, payments and holds",
+        "fields": [
+            {
+                "logical_name": "Invoice Number",
+                "description": "Supplier-assigned invoice number",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_INVOICES_ALL",         "column": "INVOICE_NUM",       "type": "VARCHAR2(50)",   "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "AP_INVOICES_ALL",         "column": "INVOICE_NUM",       "type": "VARCHAR2(50)",   "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BELNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BELNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "VendInvoiceJour",         "column": "INVOICEID",         "type": "VARCHAR(20)",    "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "Purch. Inv. Header",      "column": "No.",               "type": "CODE(20)",        "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TRANID",            "type": "VARCHAR(64)",    "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Supplier_Invoice",        "column": "Invoice_Number",    "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Supplier ID",
+                "description": "Unique identifier for the supplier/vendor",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_SUPPLIERS",            "column": "VENDOR_ID",         "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "AP_SUPPLIERS",            "column": "VENDOR_ID",         "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "LFA1",                    "column": "LIFNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "LFA1",                    "column": "LIFNR",             "type": "CHAR(10)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "VendTable",               "column": "ACCOUNTNUM",        "type": "VARCHAR(20)",    "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "Vendor",                  "column": "No.",               "type": "CODE(20)",        "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "VENDOR",                  "column": "ID",                "type": "INTEGER",        "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Supplier",                "column": "Supplier_ID",       "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Invoice Date",
+                "description": "Date on the supplier invoice",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_INVOICES_ALL",         "column": "INVOICE_DATE",      "type": "DATE",           "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AP_INVOICES_ALL",         "column": "INVOICE_DATE",      "type": "DATE",           "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BLDAT",             "type": "DATS(8)",         "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BLDAT",             "type": "DATS(8)",         "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "VendInvoiceJour",         "column": "INVOICEDATE",       "type": "DATE",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Purch. Inv. Header",      "column": "Document Date",     "type": "DATE",           "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TRANDATE",          "type": "DATE",           "is_key": False, "nullable": False},
+                    "workday":         {"table": "Supplier_Invoice",        "column": "Invoice_Date",      "type": "DATE",           "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Invoice Amount",
+                "description": "Total invoice amount in transaction currency",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_INVOICES_ALL",         "column": "INVOICE_AMOUNT",    "type": "NUMBER",         "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "AP_INVOICES_ALL",         "column": "INVOICE_AMOUNT",    "type": "NUMBER",         "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "DMBTR",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "VendInvoiceJour",         "column": "INVOICEAMOUNT",     "type": "REAL",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Purch. Inv. Header",      "column": "Amount Including VAT", "type": "DECIMAL(38,20)", "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "TOTAL",             "type": "NUMERIC(28,2)",  "is_key": False, "nullable": False},
+                    "workday":         {"table": "Supplier_Invoice",        "column": "Total_Amount",      "type": "DECIMAL(18,6)",  "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Due Date",
+                "description": "Payment due date per payment terms",
+                "category": "Date/Time",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_PAYMENT_SCHEDULES_ALL","column": "DUE_DATE",          "type": "DATE",           "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "AP_PAYMENT_SCHEDULES_ALL","column": "DUE_DATE",          "type": "DATE",           "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "BSIK",                    "column": "FAEDT",             "type": "DATS(8)",         "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSIK",                    "column": "FAEDT",             "type": "DATS(8)",         "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "VendInvoiceJour",         "column": "DUEDATE",           "type": "DATE",           "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Purch. Inv. Header",      "column": "Due Date",          "type": "DATE",           "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "DUEDATE",           "type": "DATE",           "is_key": False, "nullable": True},
+                    "workday":         {"table": "Supplier_Invoice",        "column": "Due_Date",          "type": "DATE",           "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Payment Status",
+                "description": "Whether the invoice is paid, unpaid, partially paid",
+                "category": "Status",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_INVOICES_ALL",         "column": "PAYMENT_STATUS_FLAG", "type": "VARCHAR2(1)", "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "AP_INVOICES_ALL",         "column": "PAYMENT_STATUS_FLAG", "type": "VARCHAR2(1)", "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "BKPF",                    "column": "BSTAT",             "type": "CHAR(1)",        "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BKPF",                    "column": "BSTAT",             "type": "CHAR(1)",        "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "VendInvoiceJour",         "column": "APPROVED",          "type": "ENUM",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Purch. Inv. Header",      "column": "Status",            "type": "OPTION",         "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "TRANSACTION",             "column": "STATUS",            "type": "VARCHAR(10)",    "is_key": False, "nullable": False},
+                    "workday":         {"table": "Supplier_Invoice",        "column": "Payment_Status",    "type": "VARCHAR(50)",    "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "GL Account (Expense)",
+                "description": "GL account charged for the expense/liability",
+                "category": "Account",
+                "mappings": {
+                    "oracle_fusion":   {"table": "AP_INVOICE_DISTRIBUTIONS_ALL", "column": "DIST_CODE_COMBINATION_ID", "type": "NUMBER(15)", "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "AP_INVOICE_DISTRIBUTIONS_ALL", "column": "DIST_CODE_COMBINATION_ID", "type": "NUMBER(15)", "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "BSEG",                    "column": "HKONT",             "type": "CHAR(10)",       "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "BSEG",                    "column": "HKONT",             "type": "CHAR(10)",       "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "LedgerJournalTrans",      "column": "OFFSETLEDGERDIMENSION", "type": "BIGINT",     "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Purch. Inv. Line",        "column": "No.",               "type": "CODE(20)",       "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "TRANSACTION_LINES",       "column": "ACCOUNT",           "type": "INTEGER",        "is_key": False, "nullable": True},
+                    "workday":         {"table": "Supplier_Invoice_Line",   "column": "Spend_Category",    "type": "VARCHAR(50)",    "is_key": False, "nullable": True},
+                },
+            },
+        ],
+    },
+    "INV": {
+        "label": "Inventory Management",
+        "description": "Item master, on-hand quantities and stock transactions",
+        "fields": [
+            {
+                "logical_name": "Item / Material Number",
+                "description": "Unique identifier for the inventory item or material",
+                "category": "Identity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "EGP_SYSTEM_ITEMS_B",      "column": "INVENTORY_ITEM_ID", "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "oracle_ebs":      {"table": "MTL_SYSTEM_ITEMS_B",      "column": "INVENTORY_ITEM_ID", "type": "NUMBER(15)",     "is_key": True,  "nullable": False},
+                    "sap_s4hana":      {"table": "MARA",                    "column": "MATNR",             "type": "CHAR(40)",        "is_key": True,  "nullable": False},
+                    "sap_ecc":         {"table": "MARA",                    "column": "MATNR",             "type": "CHAR(18)",        "is_key": True,  "nullable": False},
+                    "dynamics_365_fo": {"table": "InventTable",             "column": "ITEMID",            "type": "VARCHAR(20)",    "is_key": True,  "nullable": False},
+                    "dynamics_bc":     {"table": "Item",                    "column": "No.",               "type": "CODE(20)",        "is_key": True,  "nullable": False},
+                    "netsuite":        {"table": "ITEM",                    "column": "ID",                "type": "INTEGER",        "is_key": True,  "nullable": False},
+                    "workday":         {"table": "Inventory_Item",          "column": "Item_ID",           "type": "VARCHAR(50)",    "is_key": True,  "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Item Description",
+                "description": "Short description / name of the inventory item",
+                "category": "Description",
+                "mappings": {
+                    "oracle_fusion":   {"table": "EGP_SYSTEM_ITEMS_TL",     "column": "DESCRIPTION",       "type": "VARCHAR2(240)",  "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "MTL_SYSTEM_ITEMS_B",      "column": "DESCRIPTION",       "type": "VARCHAR2(240)",  "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "MAKT",                    "column": "MAKTX",             "type": "CHAR(40)",        "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "MAKT",                    "column": "MAKTX",             "type": "CHAR(40)",        "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "InventTable",             "column": "NAMEALIAS",         "type": "VARCHAR(60)",    "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Item",                    "column": "Description",       "type": "TEXT(100)",       "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "ITEM",                    "column": "DISPLAYNAME",       "type": "VARCHAR(256)",   "is_key": False, "nullable": True},
+                    "workday":         {"table": "Inventory_Item",          "column": "Item_Name",         "type": "VARCHAR(200)",   "is_key": False, "nullable": True},
+                },
+            },
+            {
+                "logical_name": "Unit of Measure",
+                "description": "Primary unit of measure for stocking/ordering",
+                "category": "Measure",
+                "mappings": {
+                    "oracle_fusion":   {"table": "EGP_SYSTEM_ITEMS_B",      "column": "PRIMARY_UOM_CODE",  "type": "VARCHAR2(3)",    "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "MTL_SYSTEM_ITEMS_B",      "column": "PRIMARY_UOM_CODE",  "type": "VARCHAR2(3)",    "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "MARA",                    "column": "MEINS",             "type": "UNIT(3)",         "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "MARA",                    "column": "MEINS",             "type": "UNIT(3)",         "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "InventTable",             "column": "UNITID",            "type": "VARCHAR(10)",    "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Item",                    "column": "Base Unit of Measure", "type": "CODE(10)",   "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "ITEM",                    "column": "BASEUNIT",          "type": "INTEGER",        "is_key": False, "nullable": False},
+                    "workday":         {"table": "Inventory_Item",          "column": "Unit_of_Measure",   "type": "VARCHAR(10)",    "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "On-Hand Quantity",
+                "description": "Current quantity available in stock",
+                "category": "Quantity",
+                "mappings": {
+                    "oracle_fusion":   {"table": "INV_ONHAND_QUANTITIES_DETAIL", "column": "TRANSACTION_QUANTITY", "type": "NUMBER", "is_key": False, "nullable": False},
+                    "oracle_ebs":      {"table": "MTL_ONHAND_QUANTITIES_DETAIL", "column": "TRANSACTION_QUANTITY", "type": "NUMBER", "is_key": False, "nullable": False},
+                    "sap_s4hana":      {"table": "MARD",                    "column": "LABST",             "type": "QUAN(13,3)",     "is_key": False, "nullable": False},
+                    "sap_ecc":         {"table": "MARD",                    "column": "LABST",             "type": "QUAN(13,3)",     "is_key": False, "nullable": False},
+                    "dynamics_365_fo": {"table": "InventSum",               "column": "PHYSICALINVENT",    "type": "REAL",           "is_key": False, "nullable": False},
+                    "dynamics_bc":     {"table": "Item Ledger Entry",       "column": "Quantity",          "type": "DECIMAL(38,20)", "is_key": False, "nullable": False},
+                    "netsuite":        {"table": "ITEM",                    "column": "QUANTITYONHAND",    "type": "NUMERIC(28,2)",  "is_key": False, "nullable": True},
+                    "workday":         {"table": "Inventory_Balance",       "column": "Quantity_On_Hand",  "type": "DECIMAL(18,6)",  "is_key": False, "nullable": False},
+                },
+            },
+            {
+                "logical_name": "Valuation / Unit Cost",
+                "description": "Standard or average cost per unit",
+                "category": "Amount",
+                "mappings": {
+                    "oracle_fusion":   {"table": "CST_ITEM_COSTS",          "column": "ITEM_COST",         "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "oracle_ebs":      {"table": "CST_ITEM_COSTS",          "column": "ITEM_COST",         "type": "NUMBER",         "is_key": False, "nullable": True},
+                    "sap_s4hana":      {"table": "MBEW",                    "column": "STPRS",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "sap_ecc":         {"table": "MBEW",                    "column": "STPRS",             "type": "CURR(13,2)",     "is_key": False, "nullable": True},
+                    "dynamics_365_fo": {"table": "InventTable",             "column": "PRICE",             "type": "REAL",           "is_key": False, "nullable": True},
+                    "dynamics_bc":     {"table": "Item",                    "column": "Unit Cost",         "type": "DECIMAL(38,20)", "is_key": False, "nullable": True},
+                    "netsuite":        {"table": "ITEM",                    "column": "COST",              "type": "NUMERIC(28,2)",  "is_key": False, "nullable": True},
+                    "workday":         {"table": "Inventory_Item",          "column": "Standard_Cost",     "type": "DECIMAL(18,6)",  "is_key": False, "nullable": True},
+                },
+            },
+        ],
+    },
+}
+
+SUPPORTED_FIELD_COMPARISON_MODULES = list(_FIELD_COMPARISON.keys())
+
+
+@router.get("/field-comparison")
+async def get_field_comparison(module: str = Query(..., description="Module key: GL, AR, AP, INV")):
+    """
+    Return field-to-field cross-ERP mapping for a given module.
+    Shows logical field names mapped to ERP-specific table/column names.
+    """
+    module_upper = module.upper()
+    data = _FIELD_COMPARISON.get(module_upper)
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Field comparison not available for module '{module}'. "
+                   f"Supported: {SUPPORTED_FIELD_COMPARISON_MODULES}"
+        )
+    return {
+        "module":      module_upper,
+        "label":       data["label"],
+        "description": data["description"],
+        "erp_sources": [s["id"] for s in ERP_SOURCES if s["supported"]],
+        "field_count": len(data["fields"]),
+        "fields":      data["fields"],
+    }
+
+
+@router.get("/field-comparison-modules")
+async def list_field_comparison_modules():
+    """List modules that have field-level comparison data."""
+    return [
+        {"key": k, "label": v["label"], "field_count": len(v["fields"])}
+        for k, v in _FIELD_COMPARISON.items()
+    ]

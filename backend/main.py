@@ -3,7 +3,7 @@ import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import erp_data, fabric_api, erp_scraper
+from app.routes import erp_data, fabric_api, erp_scraper, auth
 
 app = FastAPI(
     title="ilinkERP Fabric Accelerate",
@@ -19,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router,        prefix="/api/auth",   tags=["Auth"])
 app.include_router(erp_data.router,    prefix="/api/erp",    tags=["ERP Data"])
 app.include_router(fabric_api.router,  prefix="/api/fabric", tags=["Fabric"])
 app.include_router(erp_scraper.router, prefix="/api/erp",    tags=["erp-scraper"])

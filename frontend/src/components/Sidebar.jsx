@@ -1,9 +1,10 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import {
   LayoutDashboard, PlugZap, Settings,
-  ChevronLeft, ChevronRight, Zap, Globe,
+  ChevronLeft, ChevronRight, Zap, Globe, LogOut,
 } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 
 const NAV_ITEMS = [
   { to: "/",               Icon: LayoutDashboard, label: "Dashboard"          },
@@ -14,6 +15,9 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const location  = useLocation();
+  const navigate  = useNavigate();
+  const { user, logout } = useAuth();
+
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem("ilink_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -23,6 +27,11 @@ export default function Sidebar() {
     try { localStorage.setItem("ilink_sidebar_collapsed", String(collapsed)); }
     catch {}
   }, [collapsed]);
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
 
   return (
     <aside className="sidebar" style={{ width: collapsed ? 60 : 220 }}>
@@ -64,6 +73,59 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      {/* User badge */}
+      {user && (
+        <div style={{
+          padding: collapsed ? "8px 0" : "10px 12px",
+          borderTop: "1px solid rgba(255,255,255,0.07)",
+          display: "flex", alignItems: "center",
+          gap: collapsed ? 0 : 8,
+          justifyContent: collapsed ? "center" : "flex-start",
+        }}>
+          {/* Avatar */}
+          <div style={{
+            width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
+            background: "linear-gradient(135deg,#0891b2,#0e7490)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 11, fontWeight: 700, color: "white",
+          }}
+            title={collapsed ? `${user.display_name} (${user.role})` : undefined}
+          >
+            {(user.display_name || user.username || "U").charAt(0).toUpperCase()}
+          </div>
+          {!collapsed && (
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#e2e8f0", truncate: true,
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {user.display_name || user.username}
+              </div>
+              <div style={{
+                fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+                color: user.role === "admin" ? "#38bdf8" : "#94a3b8",
+              }}>
+                {user.role}
+              </div>
+            </div>
+          )}
+          {!collapsed && (
+            <button
+              onClick={handleLogout}
+              title="Sign out"
+              style={{
+                background: "none", border: "none", cursor: "pointer",
+                color: "#64748b", padding: 4, borderRadius: 6,
+                display: "flex", alignItems: "center",
+                transition: "color 0.15s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = "#ef4444"}
+              onMouseLeave={e => e.currentTarget.style.color = "#64748b"}
+            >
+              <LogOut size={13} />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Collapse toggle */}
       <button
