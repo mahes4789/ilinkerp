@@ -1242,21 +1242,15 @@ async def deploy(req: DeployRequest):
             })
             artifacts.append(art)
             # Register notebook ID so the pipeline can reference it.
-            # Covers: created (new), updated (re-deploy), simulated (no token),
-            # pending (LRO still running — ID still valid for pipeline wiring).
+            # Covers created (first deploy) and updated (re-deploy) — the pipeline
+            # should orchestrate exactly the layers the user selected this run.
+            # Also covers simulated (no token) and pending (LRO still running).
             if art["status"] in ("created", "updated", "simulated", "pending"):
                 nb_ids[layer] = art["id"]
 
-        # ── Augment nb_ids with pre-existing notebooks not deployed this run ──
-        # Ensures the orchestration pipeline always sequences ALL available layers
-        # (Bronze → Silver → Gold) regardless of whether each notebook was just
-        # created, just updated, or already existed from a prior deploy and was
-        # not selected this run (e.g. pipeline-only or partial-layer redeploy).
-        for layer in ("Bronze", "Silver", "Gold"):
-            if layer not in nb_ids:                        # not touched this run
-                nb_name = f"{prefix}_{layer}_Notebook"
-                if nb_name in existing_ids:                # but present in workspace
-                    nb_ids[layer] = existing_ids[nb_name]
+        # nb_ids now contains ONLY the user-selected layers for this deploy run.
+        # The pipeline activities below will chain them in Bronze → Silver → Gold
+        # order, skipping any layers the user did not select.
 
         # ── Data Pipeline ──────────────────────────────────────────────────────
         if req.create_pipeline:
