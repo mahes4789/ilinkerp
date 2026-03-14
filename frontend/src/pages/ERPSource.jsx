@@ -1824,54 +1824,63 @@ function StepFabric({ wizard, setWizard, onNext, onBack }) {
   );
 }
 
-// ── Dimensional modeling suggestions (Silver layer) ───────────────────────────
+// ── Dimensional modeling suggestions (Silver layer) ──────────────────────────
+// relationship: "1:1" one source → one target
+//              "N:1" many source tables (additionalSources) → one target (JOIN/MERGE)
+//              "1:N" one source → many targets (additionalTargets split/filter)
 const DIM_SUGGESTIONS = {
   finance: [
-    { sourceTable: "GL_JE_LINES",               targetName: "fact_gl_transactions",       type: "fact", businessName: "GL Transactions",       description: "Journal entry lines with amounts, accounts, periods" },
-    { sourceTable: "GL_JE_HEADERS",             targetName: "fact_journal_entries",       type: "fact", businessName: "Journal Entries",        description: "Journal headers with batch, status, source" },
-    { sourceTable: "GL_CODE_COMBINATIONS",      targetName: "dim_account",                type: "dim",  businessName: "Chart of Accounts",      description: "Account codes, segments, and descriptions" },
-    { sourceTable: "GL_PERIODS",                targetName: "dim_period",                 type: "dim",  businessName: "Accounting Periods",     description: "Fiscal calendar periods" },
-    { sourceTable: "FND_CURRENCIES",            targetName: "dim_currency",               type: "dim",  businessName: "Currencies",             description: "Currency codes and exchange rates" },
-    { sourceTable: "FND_FLEX_VALUES",           targetName: "dim_cost_center",            type: "dim",  businessName: "Cost Centers",           description: "Cost center hierarchy" },
+    { sourceTable: "GL_JE_LINES",               additionalSources: ["GL_JE_HEADERS"],                    relationship: "N:1", targetName: "fact_gl_transactions",    type: "fact", businessName: "GL Transactions",           description: "Journal lines merged with headers — amounts, accounts, periods, ledger" },
+    { sourceTable: "GL_CODE_COMBINATIONS",       relationship: "1:1",                                                          targetName: "dim_account",             type: "dim",  businessName: "Chart of Accounts",         description: "Account codes, segments, natural accounts and descriptions" },
+    { sourceTable: "GL_PERIODS",                 relationship: "1:1",                                                          targetName: "dim_period",              type: "dim",  businessName: "Accounting Periods",        description: "Fiscal calendar: year, quarter, month, period number" },
+    { sourceTable: "FND_CURRENCIES",             relationship: "1:1",                                                          targetName: "dim_currency",            type: "dim",  businessName: "Currencies",                description: "Currency codes, names and exchange rate metadata" },
+    { sourceTable: "FND_FLEX_VALUES",            relationship: "1:N", additionalTargets: ["dim_cost_center_hierarchy"],        targetName: "dim_cost_center",         type: "dim",  businessName: "Cost Centers",              description: "Cost center master → dim_cost_center + dim_cost_center_hierarchy" },
+    { sourceTable: "GL_LEDGERS",                 relationship: "1:1",                                                          targetName: "dim_ledger",              type: "dim",  businessName: "Ledgers / Business Units",  description: "Ledger master with currency, chart of accounts, calendar" },
   ],
   order_management: [
-    { sourceTable: "OE_ORDER_HEADERS_ALL",      targetName: "fact_sales_orders",          type: "fact", businessName: "Sales Orders",           description: "Order headers with customer, total, status" },
-    { sourceTable: "OE_ORDER_LINES_ALL",        targetName: "fact_order_lines",           type: "fact", businessName: "Order Lines",            description: "Line items with product, qty, price" },
-    { sourceTable: "HZ_CUST_ACCOUNTS",          targetName: "dim_customer",               type: "dim",  businessName: "Customers",              description: "Customer account master data" },
-    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_product",                type: "dim",  businessName: "Products",               description: "Item master with attributes" },
-    { sourceTable: "RA_TERRITORIES",            targetName: "dim_territory",              type: "dim",  businessName: "Sales Territories",      description: "Geographic and sales territory hierarchy" },
+    { sourceTable: "OE_ORDER_LINES_ALL",         additionalSources: ["OE_ORDER_HEADERS_ALL"],              relationship: "N:1", targetName: "fact_order_lines",        type: "fact", businessName: "Order Lines",               description: "Order lines merged with header — product, qty, price, status" },
+    { sourceTable: "OE_ORDER_HEADERS_ALL",       relationship: "1:N", additionalTargets: ["fact_order_holds", "fact_order_payments"], targetName: "fact_sales_orders", type: "fact", businessName: "Sales Orders",           description: "Order headers → fact_sales_orders + fact_order_holds + fact_order_payments" },
+    { sourceTable: "HZ_CUST_ACCOUNTS",           additionalSources: ["HZ_PARTIES","HZ_LOCATIONS"],         relationship: "N:1", targetName: "dim_customer",            type: "dim",  businessName: "Customers",                 description: "Customer accounts merged with party and location master" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",         additionalSources: ["MTL_SYSTEM_ITEMS_TL"],               relationship: "N:1", targetName: "dim_product",             type: "dim",  businessName: "Products / Items",          description: "Item master base + translations merged into unified product dimension" },
+    { sourceTable: "RA_TERRITORIES",             relationship: "1:1",                                                          targetName: "dim_territory",           type: "dim",  businessName: "Sales Territories",         description: "Geographic and sales territory hierarchy" },
+    { sourceTable: "QP_LIST_HEADERS_B",          relationship: "1:N", additionalTargets: ["dim_price_list_lines"],             targetName: "dim_price_list",          type: "dim",  businessName: "Price Lists",               description: "Price list header → dim_price_list + dim_price_list_lines" },
   ],
   accounts_payable: [
-    { sourceTable: "AP_INVOICES_ALL",           targetName: "fact_ap_invoices",           type: "fact", businessName: "AP Invoices",            description: "Supplier invoices with amounts and due dates" },
-    { sourceTable: "AP_INVOICE_LINES_ALL",      targetName: "fact_ap_invoice_lines",      type: "fact", businessName: "AP Invoice Lines",       description: "Invoice line distributions" },
-    { sourceTable: "AP_PAYMENTS_ALL",           targetName: "fact_ap_payments",           type: "fact", businessName: "AP Payments",            description: "Payment transactions and remittances" },
-    { sourceTable: "AP_SUPPLIERS",              targetName: "dim_supplier",               type: "dim",  businessName: "Suppliers",              description: "Supplier master with categories" },
-    { sourceTable: "AP_TERMS",                  targetName: "dim_payment_terms",          type: "dim",  businessName: "Payment Terms",          description: "Payment terms definitions" },
+    { sourceTable: "AP_INVOICE_LINES_ALL",       additionalSources: ["AP_INVOICES_ALL"],                  relationship: "N:1", targetName: "fact_ap_invoice_lines",   type: "fact", businessName: "AP Invoice Lines",          description: "Invoice lines merged with header — GL distributions, tax, amounts" },
+    { sourceTable: "AP_INVOICES_ALL",            relationship: "1:N", additionalTargets: ["fact_ap_invoice_holds"],            targetName: "fact_ap_invoices",        type: "fact", businessName: "AP Invoices",               description: "Supplier invoices → fact_ap_invoices + fact_ap_invoice_holds" },
+    { sourceTable: "AP_PAYMENTS_ALL",            relationship: "1:1",                                                          targetName: "fact_ap_payments",        type: "fact", businessName: "AP Payments",               description: "Payment runs and remittance transactions" },
+    { sourceTable: "AP_SUPPLIERS",               additionalSources: ["AP_SUPPLIER_SITES_ALL"],             relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                 description: "Supplier master merged with site/address details" },
+    { sourceTable: "AP_TERMS",                   relationship: "1:1",                                                          targetName: "dim_payment_terms",       type: "dim",  businessName: "Payment Terms",             description: "Payment terms: due date rules, discount windows" },
   ],
   accounts_receivable: [
-    { sourceTable: "RA_CUSTOMER_TRX_ALL",       targetName: "fact_ar_invoices",           type: "fact", businessName: "AR Invoices",            description: "Customer invoices with amounts and aging" },
-    { sourceTable: "AR_CASH_RECEIPTS_ALL",      targetName: "fact_ar_receipts",           type: "fact", businessName: "AR Receipts",            description: "Customer payments and receipts" },
-    { sourceTable: "HZ_CUST_ACCOUNTS",          targetName: "dim_customer",               type: "dim",  businessName: "Customers",              description: "Customer master with segments" },
+    { sourceTable: "RA_CUSTOMER_TRX_ALL",        relationship: "1:N", additionalTargets: ["fact_ar_credit_memos"],             targetName: "fact_ar_invoices",        type: "fact", businessName: "AR Invoices",               description: "Customer invoices → fact_ar_invoices + fact_ar_credit_memos" },
+    { sourceTable: "AR_CASH_RECEIPTS_ALL",       additionalSources: ["AR_RECEIVABLE_APPLICATIONS_ALL"],   relationship: "N:1", targetName: "fact_ar_receipts",        type: "fact", businessName: "AR Receipts",               description: "Cash receipts merged with invoice application details" },
+    { sourceTable: "HZ_CUST_ACCOUNTS",           additionalSources: ["HZ_PARTIES","HZ_LOCATIONS"],        relationship: "N:1", targetName: "dim_customer",            type: "dim",  businessName: "Customers",                 description: "Customer accounts merged with party master and location" },
+    { sourceTable: "AR_AGING_BUCKET_LINES_B",    relationship: "1:1",                                                          targetName: "dim_aging_bucket",        type: "dim",  businessName: "AR Aging Buckets",          description: "Aging bucket definitions (0–30, 31–60, 61–90, 90+ days)" },
   ],
   procurement: [
-    { sourceTable: "PO_HEADERS_ALL",            targetName: "fact_purchase_orders",       type: "fact", businessName: "Purchase Orders",        description: "PO headers with supplier, total, status" },
-    { sourceTable: "PO_LINES_ALL",              targetName: "fact_po_lines",              type: "fact", businessName: "PO Lines",               description: "PO line items with item, qty, price" },
-    { sourceTable: "RCV_TRANSACTIONS",          targetName: "fact_goods_receipts",        type: "fact", businessName: "Goods Receipts",         description: "PO receipts and returns" },
-    { sourceTable: "AP_SUPPLIERS",              targetName: "dim_supplier",               type: "dim",  businessName: "Suppliers",              description: "Supplier master data" },
-    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_item",                   type: "dim",  businessName: "Items",                  description: "Item master with purchasing attributes" },
+    { sourceTable: "PO_LINES_ALL",               additionalSources: ["PO_HEADERS_ALL"],                   relationship: "N:1", targetName: "fact_po_lines",           type: "fact", businessName: "PO Lines",                  description: "PO lines merged with header — item, qty, price, supplier" },
+    { sourceTable: "PO_HEADERS_ALL",             relationship: "1:N", additionalTargets: ["fact_po_releases"],                 targetName: "fact_purchase_orders",    type: "fact", businessName: "Purchase Orders",           description: "PO headers → fact_purchase_orders + fact_po_releases" },
+    { sourceTable: "RCV_TRANSACTIONS",           additionalSources: ["RCV_SHIPMENT_HEADERS"],              relationship: "N:1", targetName: "fact_goods_receipts",     type: "fact", businessName: "Goods Receipts",            description: "GR transactions merged with shipment header context" },
+    { sourceTable: "AP_SUPPLIERS",               additionalSources: ["AP_SUPPLIER_SITES_ALL"],             relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                 description: "Supplier master merged with site details" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",         relationship: "1:1",                                                          targetName: "dim_item",                type: "dim",  businessName: "Items",                     description: "Item master with purchasing and inventory attributes" },
+    { sourceTable: "PO_AGENTS",                  relationship: "1:1",                                                          targetName: "dim_buyer",               type: "dim",  businessName: "Buyers / Purchasers",       description: "Buyer master for procurement analytics" },
   ],
   inventory: [
-    { sourceTable: "MTL_TRANSACTION_ACCOUNTS",  targetName: "fact_inventory_movements",   type: "fact", businessName: "Inventory Movements",    description: "Inventory transactions with cost and qty" },
-    { sourceTable: "MTL_ONHAND_QUANTITIES_DETAIL", targetName: "fact_inventory_snapshot", type: "fact", businessName: "Inventory Snapshot",     description: "On-hand inventory by location" },
-    { sourceTable: "MTL_SYSTEM_ITEMS_B",        targetName: "dim_item",                   type: "dim",  businessName: "Items / Products",       description: "Item master with inventory attributes" },
-    { sourceTable: "ORG_ORGANIZATION_DEFINITIONS", targetName: "dim_warehouse",           type: "dim",  businessName: "Warehouses",             description: "Inventory organizations and warehouses" },
+    { sourceTable: "MTL_TRANSACTION_ACCOUNTS",   additionalSources: ["MTL_MATERIAL_TRANSACTIONS"],         relationship: "N:1", targetName: "fact_inventory_movements",type: "fact", businessName: "Inventory Movements",       description: "Inventory accounting lines merged with material transaction header" },
+    { sourceTable: "MTL_ONHAND_QUANTITIES_DETAIL",relationship: "1:1",                                                         targetName: "fact_inventory_snapshot", type: "fact", businessName: "Inventory Snapshot",        description: "On-hand quantities by item, subinventory, locator and lot" },
+    { sourceTable: "MTL_SYSTEM_ITEMS_B",         additionalSources: ["MTL_SYSTEM_ITEMS_TL"],               relationship: "N:1", targetName: "dim_item",                type: "dim",  businessName: "Items / Products",          description: "Item master merged with translations" },
+    { sourceTable: "ORG_ORGANIZATION_DEFINITIONS",additionalSources: ["HR_LOCATIONS"],                     relationship: "N:1", targetName: "dim_warehouse",           type: "dim",  businessName: "Warehouses / Orgs",         description: "Inventory organizations merged with HR location data" },
+    { sourceTable: "MTL_ITEM_CATEGORIES",        additionalSources: ["MTL_CATEGORIES_B"],                  relationship: "N:1", targetName: "dim_item_category",       type: "dim",  businessName: "Item Categories",           description: "Item categories merged with category set master" },
+    { sourceTable: "MTL_LOT_NUMBERS",            relationship: "1:1",                                                          targetName: "dim_lot",                 type: "dim",  businessName: "Lots / Batches",            description: "Lot/batch master for traceability and expiry tracking" },
   ],
   human_resources: [
-    { sourceTable: "PER_ALL_PEOPLE_F",          targetName: "dim_employee",               type: "dim",  businessName: "Employees",              description: "Employee personal and employment details" },
-    { sourceTable: "PER_ALL_ASSIGNMENTS_F",     targetName: "fact_assignments",           type: "fact", businessName: "Employee Assignments",    description: "Work assignments with org, job, grade" },
-    { sourceTable: "PER_ABSENCE_ATTENDANCES",   targetName: "fact_absence",               type: "fact", businessName: "Absence Records",         description: "Leave and absence events" },
-    { sourceTable: "HR_ALL_ORGANIZATION_UNITS", targetName: "dim_department",             type: "dim",  businessName: "Departments",            description: "Organization unit hierarchy" },
-    { sourceTable: "PER_JOBS",                  targetName: "dim_job",                    type: "dim",  businessName: "Jobs",                   description: "Job definitions and families" },
+    { sourceTable: "PER_ALL_PEOPLE_F",           additionalSources: ["PER_ALL_ASSIGNMENTS_F","PER_ADDRESSES"], relationship: "N:1", targetName: "dim_employee",        type: "dim",  businessName: "Employees",                 description: "Employee personal + current assignment + address merged" },
+    { sourceTable: "PER_ALL_ASSIGNMENTS_F",      additionalSources: ["PER_JOBS","PER_GRADES"],              relationship: "N:1", targetName: "fact_assignments",        type: "fact", businessName: "Employee Assignments",      description: "Assignments merged with job and grade master" },
+    { sourceTable: "PER_ABSENCE_ATTENDANCES",    relationship: "1:1",                                                          targetName: "fact_absence",            type: "fact", businessName: "Absence Records",           description: "Leave and absence events with duration and type" },
+    { sourceTable: "HR_ALL_ORGANIZATION_UNITS",  additionalSources: ["HR_ORGANIZATION_INFORMATION"],       relationship: "N:1", targetName: "dim_department",          type: "dim",  businessName: "Departments / Org Units",   description: "Organization units merged with classification details" },
+    { sourceTable: "PER_JOBS",                   relationship: "1:1",                                                          targetName: "dim_job",                 type: "dim",  businessName: "Jobs / Roles",              description: "Job definitions, families and functions" },
+    { sourceTable: "PAY_PAYROLL_ACTIONS",        additionalSources: ["PAY_ASSIGNMENT_ACTIONS","PAY_RUN_RESULTS"], relationship: "N:1", targetName: "fact_payroll_runs", type: "fact", businessName: "Payroll Runs",              description: "Payroll run results merged with assignment actions" },
   ],
 };
 
@@ -1915,6 +1924,156 @@ const GOLD_KPI_SUGGESTIONS = {
     { targetTable: "fact_summary_monthly",               businessName: "Monthly Summary Metrics",     description: "Aggregated KPIs by dimension and month",                      granularity: "Monthly" },
     { targetTable: "fact_performance_kpi",               businessName: "Performance KPIs",            description: "Key performance indicators by business dimension",             granularity: "Daily"   },
   ],
+};
+
+// ── Industry-standard ERP dimensional model: per-source, per-module ──────────
+// N:1  = multiple source tables JOIN → one target  (additionalSources lists the extra tables)
+// 1:N  = one source table SPLITS → multiple targets (additionalTargets lists the extra tables)
+// 1:1  = direct 1-to-1 mapping
+//
+// Sources compiled from: Oracle EBS Data Model Guide, SAP Community / ABAP Dictionary,
+// Microsoft Dynamics 365 F&O Entity Catalog, NetSuite SuiteAnalytics schema,
+// Workday Report Designer canonical fields, and Microsoft Fabric medallion architecture patterns.
+const DIM_SUGGESTIONS_BY_ERP = {
+  sap_s4hana: {
+    finance: [
+      { sourceTable: "BSEG",  additionalSources: ["BKPF"],           relationship: "N:1", targetName: "fact_gl_transactions",    type: "fact", businessName: "GL Transactions",          description: "BSEG (line items) merged with BKPF (document header) via MANDT+BUKRS+BELNR+GJAHR" },
+      { sourceTable: "SKAT",  additionalSources: ["SKA1"],            relationship: "N:1", targetName: "dim_account",             type: "dim",  businessName: "GL Accounts",              description: "G/L account descriptions (SKAT) merged with chart of accounts master (SKA1)" },
+      { sourceTable: "T009B", relationship: "1:1",                                         targetName: "dim_period",              type: "dim",  businessName: "Fiscal Periods",           description: "SAP fiscal year variant periods (T009B)" },
+      { sourceTable: "TCURR", relationship: "1:1",                                         targetName: "dim_currency_rate",       type: "dim",  businessName: "Currency Rates",           description: "Exchange rates by currency pair and date" },
+      { sourceTable: "BSID",  additionalSources: ["BSAD"],            relationship: "N:1", targetName: "fact_ar_line_items",      type: "fact", businessName: "AR Line Items (Open+Cleared)", description: "AR open items (BSID) merged with cleared items (BSAD) for full AR aging" },
+      { sourceTable: "BSIK",  additionalSources: ["BSAK"],            relationship: "N:1", targetName: "fact_ap_line_items",      type: "fact", businessName: "AP Line Items (Open+Cleared)", description: "AP open (BSIK) + cleared (BSAK) for full payable aging" },
+    ],
+    order_management: [
+      { sourceTable: "VBAP",  additionalSources: ["VBAK"],            relationship: "N:1", targetName: "fact_order_lines",        type: "fact", businessName: "Sales Order Lines",        description: "VBAP (items) merged with VBAK (header) via VBELN — qty, price, material" },
+      { sourceTable: "VBAK",  relationship: "1:N", additionalTargets: ["fact_sales_order_partners","fact_sales_order_conditions"], targetName: "fact_sales_orders", type: "fact", businessName: "Sales Orders", description: "VBAK → fact_sales_orders + partner functions + pricing conditions" },
+      { sourceTable: "KNA1",  additionalSources: ["KNVV","KNVP"],     relationship: "N:1", targetName: "dim_customer",            type: "dim",  businessName: "Customers",                description: "General customer (KNA1) merged with sales area data (KNVV) and partner fns (KNVP)" },
+      { sourceTable: "MARA",  additionalSources: ["MARC","MAKT"],     relationship: "N:1", targetName: "dim_product",             type: "dim",  businessName: "Products / Materials",     description: "Material master (MARA) + plant extension (MARC) + description (MAKT)" },
+      { sourceTable: "TVKOT", relationship: "1:1",                                         targetName: "dim_sales_org",           type: "dim",  businessName: "Sales Organizations",      description: "Sales organization master — company, region, division" },
+    ],
+    accounts_payable: [
+      { sourceTable: "RBKP",  additionalSources: ["RSEG"],            relationship: "N:1", targetName: "fact_ap_invoices",        type: "fact", businessName: "AP Invoice Documents",     description: "Invoice header (RBKP) merged with line items (RSEG) — LIV posting" },
+      { sourceTable: "PAYR",  relationship: "1:1",                                         targetName: "fact_ap_payments",        type: "fact", businessName: "AP Payments",              description: "Payment medium data (PAYR) — check, ACH runs" },
+      { sourceTable: "LFA1",  additionalSources: ["LFB1","LFM1"],     relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers / Vendors",      description: "Vendor general (LFA1) + company extension (LFB1) + purchasing org (LFM1)" },
+      { sourceTable: "T052",  relationship: "1:1",                                         targetName: "dim_payment_terms",       type: "dim",  businessName: "Payment Terms",            description: "SAP payment term keys and due date rules (T052)" },
+    ],
+    procurement: [
+      { sourceTable: "EKPO",  additionalSources: ["EKKO"],            relationship: "N:1", targetName: "fact_po_lines",           type: "fact", businessName: "PO Line Items",            description: "EKPO (PO items) merged with EKKO (header) via EBELN — item, qty, price" },
+      { sourceTable: "EKKO",  relationship: "1:N", additionalTargets: ["fact_po_account_assignments"],                           targetName: "fact_purchase_orders", type: "fact", businessName: "Purchase Orders", description: "EKKO → fact_purchase_orders + account assignment lines (EKKN)" },
+      { sourceTable: "MSEG",  additionalSources: ["MKPF"],            relationship: "N:1", targetName: "fact_goods_receipts",     type: "fact", businessName: "Goods Receipts / GI",      description: "MSEG (material document items) merged with MKPF (header) via MBLNR+MJAHR" },
+      { sourceTable: "LFA1",  additionalSources: ["LFB1","LFM1"],     relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers / Vendors",      description: "Vendor master: general + company-code + purchasing org" },
+      { sourceTable: "MARA",  additionalSources: ["MARC"],            relationship: "N:1", targetName: "dim_item",                type: "dim",  businessName: "Materials / Items",        description: "Material master (MARA) merged with plant data (MARC)" },
+    ],
+    inventory: [
+      { sourceTable: "MSEG",  additionalSources: ["MKPF"],            relationship: "N:1", targetName: "fact_inventory_movements",type: "fact", businessName: "Inventory Movements",      description: "MSEG items + MKPF header — all material document transactions" },
+      { sourceTable: "MARD",  relationship: "1:1",                                         targetName: "fact_inventory_snapshot", type: "fact", businessName: "Stock Snapshot (by Plant)", description: "Unrestricted, in-QI, restricted stock by material/plant/storage location" },
+      { sourceTable: "MARA",  additionalSources: ["MARC","MAKT","MBEW"], relationship: "N:1", targetName: "dim_item",             type: "dim",  businessName: "Materials",                description: "Material master + plant extension + description + valuation class" },
+      { sourceTable: "T001W", relationship: "1:1",                                         targetName: "dim_plant",               type: "dim",  businessName: "Plants / Warehouses",      description: "Plant master (T001W) — distribution center, factory" },
+    ],
+    human_resources: [
+      { sourceTable: "PA0001",additionalSources: ["PA0002","PA0006","PA0007"], relationship: "N:1", targetName: "dim_employee", type: "dim",  businessName: "Employees",                description: "Org. assignment (PA0001) + personal data (PA0002) + addresses (PA0006) + planned work time (PA0007)" },
+      { sourceTable: "PA0001",relationship: "1:N", additionalTargets: ["fact_employee_compensation","fact_employee_actions"],    targetName: "fact_assignments", type: "fact", businessName: "Employee Assignments", description: "PA0001 org data → fact_assignments + compensation (PA0008) + actions (PA0000)" },
+      { sourceTable: "PA2001",relationship: "1:1",                                         targetName: "fact_absence",            type: "fact", businessName: "Absences",                 description: "PA2001 absence/attendance records with hours, type, cost center" },
+      { sourceTable: "HRP1000",additionalSources: ["HRP1001"],        relationship: "N:1", targetName: "dim_department",          type: "dim",  businessName: "Org Units / Cost Centers", description: "HRP1000 (org objects) + HRP1001 (relationships) — org hierarchy" },
+    ],
+  },
+
+  dynamics_365_fo: {
+    finance: [
+      { sourceTable: "GeneralJournalAccountEntry", additionalSources: ["GeneralJournalEntry"], relationship: "N:1", targetName: "fact_gl_transactions", type: "fact", businessName: "GL Transactions", description: "Account entries merged with journal entry header via RecId — amounts, accounts, dimensions" },
+      { sourceTable: "MainAccount",              relationship: "1:1",                                         targetName: "dim_account",             type: "dim",  businessName: "Chart of Accounts",        description: "Main account master — account number, type, category" },
+      { sourceTable: "FiscalCalendarPeriod",     additionalSources: ["FiscalCalendarYear"],  relationship: "N:1", targetName: "dim_period",            type: "dim",  businessName: "Fiscal Periods",           description: "Fiscal periods merged with fiscal year via FiscalCalendar entity" },
+      { sourceTable: "CustTrans",               additionalSources: ["CustTransOpen"],       relationship: "N:1", targetName: "fact_ar_transactions",   type: "fact", businessName: "AR Transactions",          description: "CustTrans (all) merged with CustTransOpen (outstanding) for aging" },
+      { sourceTable: "VendTrans",               additionalSources: ["VendTransOpen"],       relationship: "N:1", targetName: "fact_ap_transactions",   type: "fact", businessName: "AP Transactions",          description: "VendTrans (all) merged with VendTransOpen (outstanding) for DPO/aging" },
+    ],
+    order_management: [
+      { sourceTable: "SalesLine",               additionalSources: ["SalesTable"],          relationship: "N:1", targetName: "fact_order_lines",       type: "fact", businessName: "Sales Order Lines",        description: "SalesLine items merged with SalesTable header via SalesId" },
+      { sourceTable: "SalesTable",              relationship: "1:N", additionalTargets: ["fact_sales_order_charges"],                                  targetName: "fact_sales_orders", type: "fact", businessName: "Sales Orders",     description: "SalesTable → fact_sales_orders + misc charges (MarkupTrans)" },
+      { sourceTable: "CustTable",              additionalSources: ["DirPartyTable","LogisticsPostalAddress"], relationship: "N:1", targetName: "dim_customer", type: "dim", businessName: "Customers",           description: "CustTable merged with party (DirPartyTable) and address data" },
+      { sourceTable: "EcoResProduct",          additionalSources: ["EcoResProductTranslation","InventTable"], relationship: "N:1", targetName: "dim_product", type: "dim", businessName: "Products",             description: "Product master merged with translations and inventory settings" },
+    ],
+    accounts_payable: [
+      { sourceTable: "VendInvoiceTrans",        additionalSources: ["VendInvoiceInfoTable"], relationship: "N:1", targetName: "fact_ap_invoice_lines",  type: "fact", businessName: "AP Invoice Lines",         description: "Invoice line transactions merged with invoice header" },
+      { sourceTable: "VendTable",              additionalSources: ["DirPartyTable","LogisticsPostalAddress"], relationship: "N:1", targetName: "dim_supplier", type: "dim", businessName: "Suppliers / Vendors",  description: "VendTable + party master + address merged" },
+    ],
+    procurement: [
+      { sourceTable: "PurchLine",               additionalSources: ["PurchTable"],          relationship: "N:1", targetName: "fact_po_lines",           type: "fact", businessName: "PO Lines",                 description: "PurchLine items merged with PurchTable header via PurchId" },
+      { sourceTable: "PurchTable",              relationship: "1:N", additionalTargets: ["fact_po_charges"],                                            targetName: "fact_purchase_orders", type: "fact", businessName: "Purchase Orders", description: "PurchTable → fact_purchase_orders + charges" },
+      { sourceTable: "InventTrans",             relationship: "1:1",                                         targetName: "fact_goods_receipts",     type: "fact", businessName: "Goods Receipts",           description: "InventTrans receipts filtered by TransType = Purchase" },
+      { sourceTable: "VendTable",              additionalSources: ["DirPartyTable"],        relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                description: "Vendor master merged with party table" },
+    ],
+    inventory: [
+      { sourceTable: "InventTrans",             relationship: "1:1",                                         targetName: "fact_inventory_movements", type: "fact", businessName: "Inventory Movements",      description: "All inventory transactions — receipts, issues, transfers, adjustments" },
+      { sourceTable: "InventSum",               relationship: "1:1",                                         targetName: "fact_inventory_snapshot",  type: "fact", businessName: "Inventory Snapshot",       description: "On-hand qty summary by item and warehouse" },
+      { sourceTable: "InventTable",            additionalSources: ["EcoResProduct","InventItemGroupItem"], relationship: "N:1", targetName: "dim_item", type: "dim", businessName: "Items / Products",       description: "InventTable merged with product master and item group" },
+      { sourceTable: "InventLocation",          relationship: "1:1",                                         targetName: "dim_warehouse",           type: "dim",  businessName: "Warehouses",               description: "InventLocation master — warehouse, zone, bay" },
+    ],
+    human_resources: [
+      { sourceTable: "HcmWorker",              additionalSources: ["DirPersonName","HcmEmployment","HcmPosition"], relationship: "N:1", targetName: "dim_employee", type: "dim", businessName: "Employees",          description: "Worker merged with name, employment terms, and position details" },
+      { sourceTable: "HcmEmployment",          relationship: "1:N", additionalTargets: ["fact_employee_compensation"],                                 targetName: "fact_assignments", type: "fact", businessName: "Employee Assignments", description: "HcmEmployment → assignments + compensation (HcmPositionWorkerAssignment)" },
+      { sourceTable: "HcmAbsenceCode",         relationship: "1:1",                                         targetName: "dim_absence_code",         type: "dim",  businessName: "Leave Types",              description: "Absence type codes — sick, vacation, FMLA, etc." },
+      { sourceTable: "HcmDepartment",          relationship: "1:1",                                         targetName: "dim_department",           type: "dim",  businessName: "Departments",              description: "Department master — cost center, manager, hierarchy" },
+    ],
+  },
+
+  netsuite: {
+    finance: [
+      { sourceTable: "TRANSACTION",            additionalSources: ["TRANSACTION_LINES","ACCOUNTS"],          relationship: "N:1", targetName: "fact_gl_transactions", type: "fact", businessName: "GL Transactions", description: "Transaction lines merged with header and account — journals, invoices, bills" },
+      { sourceTable: "ACCOUNTS",               relationship: "1:1",                                         targetName: "dim_account",             type: "dim",  businessName: "GL Accounts",              description: "NetSuite chart of accounts with type, sub-type, and category" },
+      { sourceTable: "ACCOUNTING_PERIODS",     relationship: "1:1",                                         targetName: "dim_period",              type: "dim",  businessName: "Accounting Periods",       description: "Fiscal periods with start/end dates, year, quarter" },
+      { sourceTable: "CURRENCIES",             relationship: "1:1",                                         targetName: "dim_currency",            type: "dim",  businessName: "Currencies",               description: "Currency codes and exchange rate metadata" },
+    ],
+    order_management: [
+      { sourceTable: "TRANSACTION_LINES",      additionalSources: ["TRANSACTION","ITEMS"],                  relationship: "N:1", targetName: "fact_order_lines",       type: "fact", businessName: "Sales Order Lines",        description: "Transaction lines (type=SalesOrder) merged with header and item" },
+      { sourceTable: "TRANSACTION",            relationship: "1:N", additionalTargets: ["fact_sales_invoices"],                                    targetName: "fact_sales_orders",      type: "fact", businessName: "Sales Orders",             description: "Sales order transactions → fact_sales_orders + invoiced amounts" },
+      { sourceTable: "CUSTOMERS",              additionalSources: ["CONTACTS","ADDRESSES"],                 relationship: "N:1", targetName: "dim_customer",            type: "dim",  businessName: "Customers",                description: "Customer master merged with primary contact and billing address" },
+      { sourceTable: "ITEMS",                  additionalSources: ["ITEM_LOCATIONS"],                       relationship: "N:1", targetName: "dim_product",             type: "dim",  businessName: "Products / Items",         description: "Item master merged with location-level pricing and inventory attributes" },
+    ],
+    accounts_payable: [
+      { sourceTable: "TRANSACTION_LINES",      additionalSources: ["TRANSACTION","VENDORS"],                relationship: "N:1", targetName: "fact_ap_invoice_lines",  type: "fact", businessName: "AP Invoice Lines",         description: "Bill lines merged with header and vendor — for spend analysis" },
+      { sourceTable: "VENDORS",                additionalSources: ["ADDRESSES"],                            relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers / Vendors",      description: "Vendor master merged with primary remittance address" },
+    ],
+    procurement: [
+      { sourceTable: "TRANSACTION_LINES",      additionalSources: ["TRANSACTION"],                         relationship: "N:1", targetName: "fact_po_lines",           type: "fact", businessName: "PO Lines",                 description: "Purchase order lines merged with header (type=PurchaseOrder)" },
+      { sourceTable: "VENDORS",                additionalSources: ["ADDRESSES"],                            relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                description: "Vendor master merged with address" },
+      { sourceTable: "ITEMS",                  relationship: "1:1",                                         targetName: "dim_item",                type: "dim",  businessName: "Items",                    description: "Purchaseable item master with GL impact accounts" },
+    ],
+    inventory: [
+      { sourceTable: "INVENTORY_BALANCE",      relationship: "1:1",                                         targetName: "fact_inventory_snapshot",  type: "fact", businessName: "Inventory Snapshot",       description: "On-hand quantity and value by item and location" },
+      { sourceTable: "ITEMS",                  additionalSources: ["ITEM_LOCATIONS"],                       relationship: "N:1", targetName: "dim_item",                type: "dim",  businessName: "Items",                    description: "Item master merged with bin/location reorder settings" },
+      { sourceTable: "LOCATIONS",              relationship: "1:1",                                         targetName: "dim_warehouse",           type: "dim",  businessName: "Locations / Warehouses",   description: "Inventory location hierarchy" },
+    ],
+    human_resources: [
+      { sourceTable: "EMPLOYEES",              additionalSources: ["CONTACTS","JOB_CODES"],                 relationship: "N:1", targetName: "dim_employee",            type: "dim",  businessName: "Employees",                description: "Employee master merged with contact info and job classification" },
+      { sourceTable: "DEPARTMENTS",            relationship: "1:1",                                         targetName: "dim_department",          type: "dim",  businessName: "Departments",              description: "Department master with budget owner" },
+    ],
+  },
+
+  workday: {
+    finance: [
+      { sourceTable: "Ledger_Account_Line",    additionalSources: ["Journal","Accounting_Period"],          relationship: "N:1", targetName: "fact_gl_transactions",    type: "fact", businessName: "GL Transactions",          description: "Ledger account lines merged with journal header and period" },
+      { sourceTable: "Ledger_Account",         relationship: "1:1",                                         targetName: "dim_account",             type: "dim",  businessName: "Ledger Accounts",          description: "Workday ledger account with account type and summary level" },
+      { sourceTable: "Fiscal_Time_Period",     relationship: "1:1",                                         targetName: "dim_period",              type: "dim",  businessName: "Fiscal Periods",           description: "Fiscal periods by company calendar" },
+      { sourceTable: "Currency_Rate",          relationship: "1:1",                                         targetName: "dim_currency_rate",       type: "dim",  businessName: "Exchange Rates",           description: "Daily currency conversion rates" },
+    ],
+    accounts_payable: [
+      { sourceTable: "Supplier_Invoice_Line",  additionalSources: ["Supplier_Invoice"],                    relationship: "N:1", targetName: "fact_ap_invoice_lines",  type: "fact", businessName: "AP Invoice Lines",         description: "Invoice lines merged with invoice header — amounts, spend categories" },
+      { sourceTable: "Supplier",               additionalSources: ["Supplier_Contact"],                    relationship: "N:1", targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                description: "Supplier master merged with primary contact" },
+      { sourceTable: "Payment_Term",           relationship: "1:1",                                         targetName: "dim_payment_terms",       type: "dim",  businessName: "Payment Terms",            description: "Workday payment term definitions" },
+    ],
+    procurement: [
+      { sourceTable: "Purchase_Order_Line",    additionalSources: ["Purchase_Order"],                      relationship: "N:1", targetName: "fact_po_lines",           type: "fact", businessName: "PO Lines",                 description: "PO lines merged with PO header — spend category, quantity, price" },
+      { sourceTable: "Supplier",               relationship: "1:1",                                         targetName: "dim_supplier",            type: "dim",  businessName: "Suppliers",                description: "Supplier master" },
+      { sourceTable: "Spend_Category",         relationship: "1:1",                                         targetName: "dim_spend_category",      type: "dim",  businessName: "Spend Categories",         description: "Workday spend category hierarchy for procurement analytics" },
+    ],
+    human_resources: [
+      { sourceTable: "Worker",                 additionalSources: ["Worker_Profile","Employment_Data","Position"], relationship: "N:1", targetName: "dim_employee", type: "dim",  businessName: "Employees / Workers",      description: "Worker merged with profile, employment terms and current position" },
+      { sourceTable: "Worker",                 relationship: "1:N", additionalTargets: ["fact_compensation_history","fact_employee_actions"],   targetName: "fact_assignments", type: "fact", businessName: "Assignments",       description: "Worker → assignments + compensation changes + HR actions over time" },
+      { sourceTable: "Absence_Input",          relationship: "1:1",                                         targetName: "fact_absence",            type: "fact", businessName: "Absence / Leave",          description: "Leave and absence requests with approved hours and type" },
+      { sourceTable: "Cost_Center",            relationship: "1:1",                                         targetName: "dim_department",          type: "dim",  businessName: "Cost Centers / Depts",     description: "Cost center hierarchy with manager and budget" },
+      { sourceTable: "Pay_Component",          additionalSources: ["Payroll_Result"],                      relationship: "N:1", targetName: "fact_payroll_runs",       type: "fact", businessName: "Payroll Runs",             description: "Payroll pay components merged with result header" },
+    ],
+  },
 };
 
 function _guessTableType(t) {
@@ -2002,30 +2161,60 @@ function StepDeploy({ wizard, onBack }) {
   // Error expansion in results table
   const [expandedErrors, setExpandedErrors] = useState(new Set());
 
+  // Per-layer deploy results & loading
+  const [layerResults,  setLayerResults]  = useState({});
+  const [layerDeploying,setLayerDeploying]= useState({ bronze: false, silver: false, gold: false });
+
   const tables = wizard.discoveredTables ?? [];
 
   // ── Initialize dimensional model mappings from suggestions ────────────────
   useEffect(() => {
     if (tables.length === 0 || dimMappings.length > 0) return;
     const modKey = (wizard.module ?? "").toLowerCase().replace(/[\s\-]+/g, "_");
-    const suggs  = DIM_SUGGESTIONS[modKey];
+    const srcKey = (wizard.source ?? "").toLowerCase();
+
+    // Priority: 1) ERP-specific suggestions  2) generic (Oracle-EBS-aligned) suggestions
+    const erpSpecific = DIM_SUGGESTIONS_BY_ERP[srcKey]?.[modKey];
+    const suggs = erpSpecific?.length > 0 ? erpSpecific : DIM_SUGGESTIONS[modKey];
+
+    const normalise = (tbl) => tbl.toUpperCase().replace(/_ALL$/, "").replace(/_B$/, "");
+
     if (suggs?.length > 0) {
-      // Use suggestions that match discovered tables (partial match)
+      // Match suggestions against discovered tables (primary source table, partial match)
       const matched = suggs.filter(s =>
-        tables.some(t => t.toUpperCase().includes(s.sourceTable.replace(/_ALL$/,"").replace(/_B$/,"")))
+        tables.some(t => t.toUpperCase().includes(normalise(s.sourceTable)))
+      );
+      const matchedSrcSet = new Set(
+        matched.flatMap(s => [s.sourceTable, ...(s.additionalSources ?? [])].map(normalise))
       );
       const unmatched = tables
-        .filter(t => !matched.some(s => t.toUpperCase().includes(s.sourceTable.replace(/_ALL$/,"").replace(/_B$/,""))))
-        .map((t, i) => ({ sourceTable: t, targetName: _guessTargetName(t), type: _guessTableType(t), businessName: _humanize(t), description: "", enabled: true, id: `gen-${i}` }));
-      setDimMappings([...matched.map((s, i) => ({ ...s, enabled: true, id: `sug-${i}` })), ...unmatched]);
+        .filter(t => !matchedSrcSet.has(normalise(t)))
+        .map((t, i) => ({
+          id: `gen-${i}`, sourceTable: t,
+          targetName: _guessTargetName(t), type: _guessTableType(t),
+          businessName: _humanize(t), description: "",
+          relationship: "1:1", additionalSources: [], additionalTargets: [], enabled: true,
+        }));
+      setDimMappings([
+        ...matched.map((s, i) => ({
+          ...s,
+          enabled: true,
+          id: `sug-${i}`,
+          relationship:       s.relationship       ?? "1:1",
+          additionalSources:  s.additionalSources  ?? [],
+          additionalTargets:  s.additionalTargets  ?? [],
+        })),
+        ...unmatched,
+      ]);
     } else {
       setDimMappings(tables.map((t, i) => ({
         id: `gen-${i}`, sourceTable: t, targetName: _guessTargetName(t),
-        type: _guessTableType(t), businessName: _humanize(t), description: "", enabled: true,
+        type: _guessTableType(t), businessName: _humanize(t), description: "",
+        relationship: "1:1", additionalSources: [], additionalTargets: [], enabled: true,
       })));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tables.join(","), wizard.module]);
+  }, [tables.join(","), wizard.module, wizard.source]);
 
   // ── Initialize Gold KPI suggestions ──────────────────────────────────────
   useEffect(() => {
@@ -2122,6 +2311,42 @@ function StepDeploy({ wizard, onBack }) {
       toast.error(detail);
     },
   });
+
+  // ── Per-layer deploy (Bronze / Silver / Gold independently) ──────────────
+  const deployLayer = async (layer) => {
+    setLayerDeploying(p => ({ ...p, [layer]: true }));
+    try {
+      const r = await axios.post(`${API}/api/fabric/deploy`, {
+        workspace_id:         wizard.fabricWorkspace?.workspace_id ?? "",
+        lakehouse_id:         wizard.fabricWorkspace?.lakehouse_id ?? "",
+        source_type:          wizard.source,
+        module:               wizard.module,
+        connection_id:        wizard.connectionId   ?? "",
+        connection_name:      wizard.connectionName ?? "",
+        selected_tables:      tables,
+        create_bronze:        layer === "bronze",
+        create_silver:        layer === "silver",
+        create_gold:          layer === "gold",
+        create_pipeline:      false,
+        custom_sql,
+        silver_sql,
+        gold_sql,
+        notebook_types:       notebookTypes,
+        table_kernel_types:   tableKernelTypes,
+        custom_notebook_code,
+        custom_pipeline_json: "",
+      });
+      setLayerResults(p => ({ ...p, [layer]: r.data }));
+      const cap = layer.charAt(0).toUpperCase() + layer.slice(1);
+      if (r.data.live) toast.success(`${cap} layer deployed to Fabric — ${r.data.total} artifact(s)`);
+      else             toast(`${cap} deployment simulated (no live Fabric token)`, { icon: "ℹ️" });
+    } catch (e) {
+      toast.error(e.response?.data?.detail ?? `${layer} deployment failed`);
+      setLayerResults(p => ({ ...p, [layer]: { error: true } }));
+    } finally {
+      setLayerDeploying(p => ({ ...p, [layer]: false }));
+    }
+  };
 
   // ── Fetch code preview from backend ──────────────────────────────────────
   const fetchPreview = async () => {
@@ -2233,7 +2458,7 @@ function StepDeploy({ wizard, onBack }) {
       </div>
 
       {/* ── Summary cards ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
         {[
           { label: "ERP Source", value: wizard.sourceName ?? wizard.source,         icon: Server  },
           { label: "Module",     value: wizard.moduleName ?? wizard.module,          icon: Package },
@@ -2367,6 +2592,33 @@ function StepDeploy({ wizard, onBack }) {
                   </div>
                 )}
               </div>
+              {/* ── Deploy Bronze to Fabric ───────────────────────────── */}
+              {opts.bronze && (
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: "#fef3c7", border: "2px solid #fbbf24", borderRadius: 12 }}>
+                  <span style={{ fontSize: 22 }}>🥉</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>Deploy Bronze Layer</div>
+                    <div style={{ fontSize: 11, color: "#92400e", marginTop: 2 }}>
+                      Extract {tables.length} table(s) from <strong>{wizard.sourceName}</strong> → Delta (bronze schema) — raw ingestion, no transformation
+                    </div>
+                  </div>
+                  {layerResults.bronze && (
+                    <span style={{ fontSize: 11, padding: "3px 12px", borderRadius: 20, fontWeight: 700,
+                      background: layerResults.bronze.error ? "#fef2f2" : "#dcfce7",
+                      color:      layerResults.bronze.error ? "#b91c1c" : "#15803d",
+                      border:     `1px solid ${layerResults.bronze.error ? "#fecaca" : "#bbf7d0"}` }}>
+                      {layerResults.bronze.error ? "✗ Failed" : `✓ ${layerResults.bronze.total ?? 0} artifact(s)`}
+                    </span>
+                  )}
+                  <button
+                    disabled={layerDeploying.bronze}
+                    onClick={() => deployLayer("bronze")}
+                    style={{ padding: "9px 20px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: layerDeploying.bronze ? "not-allowed" : "pointer", border: "2px solid #d97706", background: "#d97706", color: "white", display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                    {layerDeploying.bronze ? <><RefreshCw size={13} className="spin" /> Deploying…</> : <><Play size={13} /> Deploy Bronze to Fabric</>}
+                  </button>
+                </div>
+              )}
+
               {tables.length > 0 && opts.bronze && (
                 <div className="card" style={{ padding: 20 }}>
                   <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
@@ -2470,50 +2722,159 @@ function StepDeploy({ wizard, onBack }) {
                     </h3>
                     {standardLoaded && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "#f0fdf4", color: "#15803d", border: "1px solid #bbf7d0", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}><CheckCircle2 size={10} /> Standard SQL applied</span>}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 120px 1fr", gap: 8, padding: "6px 10px", background: "#f8fafc", borderRadius: 6, marginBottom: 6, fontSize: 10, fontWeight: 600, color: "#64748b" }}>
-                    <span>En</span><span>Source Table (Bronze)</span><span>Type</span><span>Target Table (Silver) — Business Name</span>
+                  {/* Header row */}
+                  <div style={{ display: "grid", gridTemplateColumns: "26px 1fr 80px 80px 1fr", gap: 6, padding: "5px 10px", background: "#f8fafc", borderRadius: 6, marginBottom: 6, fontSize: 10, fontWeight: 600, color: "#64748b" }}>
+                    <span>✓</span>
+                    <span>Source Table(s) → Bronze</span>
+                    <span>Dim/Fact</span>
+                    <span>Cardinality</span>
+                    <span>Target Table → Silver / Business Name</span>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {dimMappings.map((m, idx) => (
-                      <div key={m.id} style={{ border: "1px solid", borderRadius: 8, overflow: "hidden", borderColor: m.enabled ? (m.type === "fact" ? "#bfdbfe" : "#bbf7d0") : "#e2e8f0", background: m.enabled ? (m.type === "fact" ? "#f0f9ff" : "#f0fdf4") : "#f8fafc", opacity: m.enabled ? 1 : 0.6 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 120px 1fr", gap: 8, alignItems: "center", padding: "8px 10px", cursor: "pointer" }} onClick={() => setDimExpanded(dimExpanded === m.id ? null : m.id)}>
-                          <input type="checkbox" checked={m.enabled} onClick={e => e.stopPropagation()} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, enabled: e.target.checked } : d))} />
-                          <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 600, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.sourceTable}</span>
-                          <div>
-                            <select value={m.type} onClick={e => e.stopPropagation()} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, type: e.target.value, targetName: (e.target.value === "fact" ? "fact_" : "dim_") + m.targetName.replace(/^(fact_|dim_)/, "") } : d))}
-                              style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, border: `1px solid ${m.type === "fact" ? "#93c5fd" : "#86efac"}`, background: m.type === "fact" ? "#dbeafe" : "#dcfce7", color: m.type === "fact" ? "#1d4ed8" : "#15803d", cursor: "pointer", fontWeight: 700 }}>
-                              <option value="dim">dim</option><option value="fact">fact</option>
-                            </select>
+                    {dimMappings.map((m, idx) => {
+                      const rel = m.relationship ?? "1:1";
+                      const relColor = rel === "N:1" ? "#d97706" : rel === "1:N" ? "#7c3aed" : "#64748b";
+                      const relBg    = rel === "N:1" ? "#fef3c7" : rel === "1:N" ? "#f5f3ff" : "#f1f5f9";
+                      return (
+                        <div key={m.id} style={{ border: "1px solid", borderRadius: 8, overflow: "hidden", borderColor: m.enabled ? (m.type === "fact" ? "#bfdbfe" : "#bbf7d0") : "#e2e8f0", background: m.enabled ? (m.type === "fact" ? "#f0f9ff" : "#f0fdf4") : "#f8fafc", opacity: m.enabled ? 1 : 0.6 }}>
+                          {/* Summary row */}
+                          <div style={{ display: "grid", gridTemplateColumns: "26px 1fr 80px 80px 1fr", gap: 6, alignItems: "center", padding: "8px 10px", cursor: "pointer" }} onClick={() => setDimExpanded(dimExpanded === m.id ? null : m.id)}>
+                            <input type="checkbox" checked={m.enabled} onClick={e => e.stopPropagation()} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, enabled: e.target.checked } : d))} />
+                            {/* Source column — show count badge if N:1 */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
+                              <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.sourceTable}</span>
+                              {(m.additionalSources ?? []).length > 0 && (
+                                <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                                  +{m.additionalSources.length}
+                                </span>
+                              )}
+                            </div>
+                            {/* Type selector */}
+                            <div onClick={e => e.stopPropagation()}>
+                              <select value={m.type}
+                                onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, type: e.target.value, targetName: (e.target.value === "fact" ? "fact_" : "dim_") + m.targetName.replace(/^(fact_|dim_)/, "") } : d))}
+                                style={{ fontSize: 10, padding: "2px 4px", borderRadius: 6, border: `1px solid ${m.type === "fact" ? "#93c5fd" : "#86efac"}`, background: m.type === "fact" ? "#dbeafe" : "#dcfce7", color: m.type === "fact" ? "#1d4ed8" : "#15803d", cursor: "pointer", fontWeight: 700, width: "100%" }}>
+                                <option value="dim">dim</option><option value="fact">fact</option>
+                              </select>
+                            </div>
+                            {/* Cardinality selector */}
+                            <div onClick={e => e.stopPropagation()}>
+                              <select value={rel}
+                                onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, relationship: e.target.value } : d))}
+                                title="Source-to-Target cardinality: 1:1 direct, N:1 merge multiple sources, 1:N split to multiple targets"
+                                style={{ fontSize: 10, padding: "2px 4px", borderRadius: 6, border: `1px solid ${relColor}`, background: relBg, color: relColor, cursor: "pointer", fontWeight: 700, width: "100%" }}>
+                                <option value="1:1">1 : 1</option>
+                                <option value="N:1">N : 1</option>
+                                <option value="1:N">1 : N</option>
+                              </select>
+                            </div>
+                            {/* Target */}
+                            <div style={{ display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" }}>
+                              <span style={{ fontSize: 11, fontFamily: "monospace", color: m.type === "fact" ? "#1d4ed8" : "#15803d", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.targetName}</span>
+                              <span style={{ fontSize: 10, color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.businessName}</span>
+                            </div>
                           </div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                            <span style={{ fontSize: 12, fontFamily: "monospace", color: m.type === "fact" ? "#1d4ed8" : "#15803d", fontWeight: 600 }}>{m.targetName}</span>
-                            <span style={{ fontSize: 10, color: "#64748b" }}>{m.businessName}</span>
-                          </div>
+
+                          {/* Expanded detail panel */}
+                          {dimExpanded === m.id && (
+                            <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                                <div>
+                                  <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name</label>
+                                  <input type="text" className="input" value={m.targetName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, targetName: e.target.value } : d))} style={{ fontFamily: "monospace", fontSize: 11 }} />
+                                </div>
+                                <div>
+                                  <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Business-Friendly Name</label>
+                                  <input type="text" className="input" value={m.businessName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, businessName: e.target.value } : d))} />
+                                </div>
+                                <div style={{ gridColumn: "1 / -1" }}>
+                                  <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Description / Transform Notes</label>
+                                  <input type="text" className="input" value={m.description ?? ""} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, description: e.target.value } : d))} placeholder="e.g. Join condition, filter logic, business rule" />
+                                </div>
+                              </div>
+
+                              {/* N:1 — additional source tables panel */}
+                              {rel === "N:1" && (
+                                <div style={{ padding: "10px 12px", background: "#fffbeb", borderRadius: 8, border: "1px dashed #fbbf24" }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                                    🔀 Additional Source Tables (JOINed / MERGEd into <code style={{ fontFamily: "monospace", background: "#fef3c7", padding: "1px 5px", borderRadius: 4 }}>{m.targetName}</code>)
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                                    {(m.additionalSources ?? []).map((src, si) => (
+                                      <span key={si} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "#fef3c7", border: "1px solid #fbbf24", borderRadius: 6, fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}>
+                                        {src}
+                                        <button onClick={() => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, additionalSources: (d.additionalSources ?? []).filter((_, j) => j !== si) } : d))}
+                                          style={{ background: "none", border: "none", cursor: "pointer", color: "#d97706", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                                      </span>
+                                    ))}
+                                    <input placeholder="+ JOIN table (Enter to add)" onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const v = e.target.value.trim(); setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, additionalSources: [...(d.additionalSources ?? []), v] } : d)); e.target.value = ""; } }}
+                                      style={{ fontSize: 11, fontFamily: "monospace", padding: "3px 8px", border: "1px dashed #fbbf24", borderRadius: 6, background: "white", outline: "none", minWidth: 200 }} />
+                                  </div>
+                                  <p style={{ fontSize: 10, color: "#92400e", margin: 0 }}>Press Enter to add. Use standard ERP join keys (e.g. HEADER_ID, ORG_ID). Join logic auto-generated in the notebook.</p>
+                                </div>
+                              )}
+
+                              {/* 1:N — additional target tables panel */}
+                              {rel === "1:N" && (
+                                <div style={{ padding: "10px 12px", background: "#f5f3ff", borderRadius: 8, border: "1px dashed #c4b5fd" }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: "#6d28d9", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                                    🔀 Additional Target Tables (derived from <code style={{ fontFamily: "monospace", background: "#ede9fe", padding: "1px 5px", borderRadius: 4 }}>{m.sourceTable}</code>)
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                                    {(m.additionalTargets ?? []).map((tgt, ti) => {
+                                      const tgtName = typeof tgt === "string" ? tgt : tgt.targetName;
+                                      return (
+                                        <span key={ti} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "#ede9fe", border: "1px solid #c4b5fd", borderRadius: 6, fontSize: 11, fontFamily: "monospace", fontWeight: 600, color: "#6d28d9" }}>
+                                          {tgtName}
+                                          <button onClick={() => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, additionalTargets: (d.additionalTargets ?? []).filter((_, j) => j !== ti) } : d))}
+                                            style={{ background: "none", border: "none", cursor: "pointer", color: "#7c3aed", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                                        </span>
+                                      );
+                                    })}
+                                    <input placeholder="+ Additional target table (Enter to add)" onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const v = e.target.value.trim(); setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, additionalTargets: [...(d.additionalTargets ?? []), v] } : d)); e.target.value = ""; } }}
+                                      style={{ fontSize: 11, fontFamily: "monospace", padding: "3px 8px", border: "1px dashed #c4b5fd", borderRadius: 6, background: "white", outline: "none", minWidth: 230 }} />
+                                  </div>
+                                  <p style={{ fontSize: 10, color: "#6d28d9", margin: 0 }}>Press Enter to add. Each target gets a filtered/transformed view of the source with a WHERE clause in the notebook.</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        {dimExpanded === m.id && (
-                          <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                            <div>
-                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name</label>
-                              <input type="text" className="input" value={m.targetName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, targetName: e.target.value } : d))} style={{ fontFamily: "monospace", fontSize: 12 }} />
-                            </div>
-                            <div>
-                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Business-Friendly Name</label>
-                              <input type="text" className="input" value={m.businessName} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, businessName: e.target.value } : d))} />
-                            </div>
-                            <div style={{ gridColumn: "1 / -1" }}>
-                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Description</label>
-                              <input type="text" className="input" value={m.description ?? ""} onChange={e => setDimMappings(dm => dm.map((d, i) => i === idx ? { ...d, description: e.target.value } : d))} placeholder="Brief description of this table" />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div style={{ marginTop: 10 }}>
                     <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setDimMappings(dm => [...dm, { id: `custom-${Date.now()}`, sourceTable: "", targetName: "dim_new_table", type: "dim", businessName: "New Table", description: "", enabled: true }])}>
                       <Plus size={12} /> Add Mapping
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* ── Deploy Silver to Fabric ───────────────────────────── */}
+              {opts.silver && (
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: "#eff6ff", border: "2px solid #93c5fd", borderRadius: 12 }}>
+                  <span style={{ fontSize: 22 }}>🥈</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1d4ed8" }}>Deploy Silver Layer</div>
+                    <div style={{ fontSize: 11, color: "#1d4ed8", marginTop: 2 }}>
+                      Transform Bronze → Silver: {dimMappings.filter(m => m.enabled && m.type === "dim").length} dim + {dimMappings.filter(m => m.enabled && m.type === "fact").length} fact tables — conformed star schema
+                    </div>
+                  </div>
+                  {layerResults.silver && (
+                    <span style={{ fontSize: 11, padding: "3px 12px", borderRadius: 20, fontWeight: 700,
+                      background: layerResults.silver.error ? "#fef2f2" : "#dcfce7",
+                      color:      layerResults.silver.error ? "#b91c1c" : "#15803d",
+                      border:     `1px solid ${layerResults.silver.error ? "#fecaca" : "#bbf7d0"}` }}>
+                      {layerResults.silver.error ? "✗ Failed" : `✓ ${layerResults.silver.total ?? 0} artifact(s)`}
+                    </span>
+                  )}
+                  <button
+                    disabled={layerDeploying.silver}
+                    onClick={() => deployLayer("silver")}
+                    style={{ padding: "9px 20px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: layerDeploying.silver ? "not-allowed" : "pointer", border: "2px solid #2563eb", background: "#2563eb", color: "white", display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                    {layerDeploying.silver ? <><RefreshCw size={13} className="spin" /> Deploying…</> : <><Play size={13} /> Deploy Silver to Fabric</>}
+                  </button>
                 </div>
               )}
 
@@ -2657,6 +3018,33 @@ function StepDeploy({ wizard, onBack }) {
                 </div>
               )}
 
+              {/* ── Deploy Gold to Fabric ─────────────────────────────── */}
+              {opts.gold && (
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: "#fef9c3", border: "2px solid #fde68a", borderRadius: 12 }}>
+                  <span style={{ fontSize: 22 }}>🥇</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#854d0e" }}>Deploy Gold Layer</div>
+                    <div style={{ fontSize: 11, color: "#854d0e", marginTop: 2 }}>
+                      Aggregate Silver → Gold: {goldKpis.filter(k => k.enabled).length} KPI table(s) · {goldErl.granularity} granularity{goldErl.addCalendarDim ? " · + dim_date" : ""}
+                    </div>
+                  </div>
+                  {layerResults.gold && (
+                    <span style={{ fontSize: 11, padding: "3px 12px", borderRadius: 20, fontWeight: 700,
+                      background: layerResults.gold.error ? "#fef2f2" : "#dcfce7",
+                      color:      layerResults.gold.error ? "#b91c1c" : "#15803d",
+                      border:     `1px solid ${layerResults.gold.error ? "#fecaca" : "#bbf7d0"}` }}>
+                      {layerResults.gold.error ? "✗ Failed" : `✓ ${layerResults.gold.total ?? 0} artifact(s)`}
+                    </span>
+                  )}
+                  <button
+                    disabled={layerDeploying.gold}
+                    onClick={() => deployLayer("gold")}
+                    style={{ padding: "9px 20px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: layerDeploying.gold ? "not-allowed" : "pointer", border: "2px solid #b45309", background: "#b45309", color: "white", display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                    {layerDeploying.gold ? <><RefreshCw size={13} className="spin" /> Deploying…</> : <><Play size={13} /> Deploy Gold to Fabric</>}
+                  </button>
+                </div>
+              )}
+
               {tables.length > 0 && opts.gold && (
                 <div className="card" style={{ padding: 20 }}>
                   <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
@@ -2702,7 +3090,7 @@ function StepDeploy({ wizard, onBack }) {
                 <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
                   <ListChecks size={14} style={{ color: "var(--color-primary)" }} /> Deployment Summary
                 </h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
                   {[
                     { layer: "bronze", emoji: "🥉", color: "#92400e", border: "#fbbf24", bg: "#fffbeb", enabled: opts.bronze,
                       details: [
@@ -3137,7 +3525,7 @@ export default function ERPSource() {
       </div>
 
       {/* Wizard card */}
-      <div className="card" style={{ padding: 28 }}>
+      <div className="card" style={{ padding: 22, overflow: "hidden", minWidth: 0 }}>
         <StepBar step={step} />
 
         {step === 1 && <StepSource   wizard={wizard} setWizard={setWizard} onNext={next} />}
