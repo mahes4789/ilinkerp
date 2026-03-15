@@ -62,6 +62,13 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_94DC9CA9B4D4482DB44FDF956DB5A691 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B76A997D4E70466B9214833E09942CB0 }}
 
+      - name: Ensure required secrets exist
+        run: |
+          if [ -z "${{ secrets.AZURE_RESOURCE_GROUP }}" ]; then
+            echo "ERROR: Secret 'AZURE_RESOURCE_GROUP' is not set. Please create it in the repo settings." >&2
+            exit 1
+          fi
+
       - name: Set Web App settings (persisted storage + port)
         uses: azure/CLI@v1
         with:
