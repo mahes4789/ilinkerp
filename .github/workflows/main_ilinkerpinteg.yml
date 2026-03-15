@@ -22,11 +22,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # ── Azure config FIRST ────────────────────────────────────────────────
-      # Configure app settings before the build steps so that if a restart
-      # is triggered (by changing SCM_DO_BUILD_DURING_DEPLOYMENT etc.) the
-      # app has fully restarted by the time the deploy step runs (~3 min later).
-      # This eliminates the race condition where the deployment starts while
-      # the SCM container is still restarting with old settings active.
+      # Running config before the build steps means any SCM restart triggered
+      # by a settings change is fully complete by the time we deploy (~3 min later).
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -35,7 +32,7 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B76A997D4E70466B9214833E09942CB0 }}
 
       # Use AZURE_RESOURCE_GROUP repo secret to skip the slow az webapp list call.
-      # To set: GitHub repo → Settings → Secrets → New secret → AZURE_RESOURCE_GROUP
+      # Set it: GitHub repo → Settings → Secrets → New secret → AZURE_RESOURCE_GROUP
       - name: Resolve resource group
         run: |
           if [ -n "${{ secrets.AZURE_RESOURCE_GROUP }}" ]; then
@@ -47,9 +44,10 @@ jobs:
             echo "RG=$RG" >> $GITHUB_ENV
           fi
 
-      # Run only when settings need updating — skipped on regular code pushes.
-      # Even when it runs, the build steps below (~3 min) give the app
-      # plenty of time to restart before the deployment begins.
+      # Skipped on regular code pushes — only runs when settings need updating.
+      # SCM_DO_BUILD_DURING_DEPLOYMENT=true lets Oryx install packages using
+      # Azure's exact Python 3.11 runtime, which guarantees binary compatibility.
+      # Oryx caches the virtual environment (antenv) so repeat builds take ~30s.
       - name: Configure Azure Web App settings
         if: |
           github.event_name == 'workflow_dispatch' ||
@@ -61,13 +59,12 @@ jobs:
             --settings \
               WEBSITES_PORT=8001 \
               APP_DATA_DIR=/home/data \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
-              PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
             --output none
 
           az webapp config set \
             --resource-group "$RG" --name "$WEBAPP_NAME" \
-            --startup-file "bash /home/site/wwwroot/startup.sh" \
+            --startup-file "uvicorn main:app --host 0.0.0.0 --port 8001" \
             --output none
 
       # ── React frontend ────────────────────────────────────────────────────
@@ -81,30 +78,9 @@ jobs:
       - name: Build React frontend
         run: cd frontend && npm ci && npm run build
 
-      # ── Python packages ───────────────────────────────────────────────────
-      # Cache the INSTALLED packages folder keyed on requirements.txt hash.
-      # Cache hit  → skip pip install entirely    (~10s restore vs ~3 min install)
-      # Cache miss → install runs, result saved for next run
-      - name: Cache installed Python packages
-        id: cache-py-pkgs
-        uses: actions/cache@v4
-        with:
-          path: backend/.python_packages
-          key: py-pkgs-linux-3.11-${{ hashFiles('backend/requirements.txt') }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Python packages into deployment bundle
-        if: steps.cache-py-pkgs.outputs.cache-hit != 'true'
-        run: |
-          pip install \
-            --target backend/.python_packages/lib/site-packages \
-            -r backend/requirements.txt
-
       # ── Assemble deployment zip ───────────────────────────────────────────
-      # zip uses -x (not --exclude) and plain globs (no **).
+      # Only source code + built frontend — Oryx installs Python packages on
+      # Azure using its own Python 3.11, avoiding any cross-OS ABI issues.
       - name: Assemble deployment zip
         run: |
           mkdir -p backend/static
@@ -113,13 +89,13 @@ jobs:
           zip -r ../deploy.zip . \
             -x "*/__pycache__/*" \
             -x "*.pyc" \
-            -x "*.pyo"
+            -x "*.pyo" \
+            -x "*.python_packages/*"
           echo "Zip size: $(du -sh ../deploy.zip | cut -f1)"
 
       # ── Deploy ────────────────────────────────────────────────────────────
-      # By this point, any app-settings restart triggered above has fully
-      # completed (build steps take ~3 min) so SCM_DO_BUILD_DURING_DEPLOYMENT=false
-      # is guaranteed to be active — Oryx will not run.
+      # The config step above (if it ran) triggered a restart ~3 min ago —
+      # the site is fully settled before this upload begins.
       - name: Deploy zip to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
