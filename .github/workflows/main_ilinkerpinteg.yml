@@ -67,7 +67,7 @@ jobs:
 
           az webapp config set \
             --resource-group "$RG" --name "$WEBAPP_NAME" \
-            --startup-file "python -m uvicorn main:app --host 0.0.0.0 --port 8001" \
+            --startup-file "bash /home/site/wwwroot/startup.sh" \
             --output none
 
       # ── React frontend ────────────────────────────────────────────────────
@@ -112,7 +112,6 @@ jobs:
           cd backend
           zip -r ../deploy.zip . \
             -x "*/__pycache__/*" \
-            -x "*/.dist-info/*" \
             -x "*.pyc" \
             -x "*.pyo"
           echo "Zip size: $(du -sh ../deploy.zip | cut -f1)"
