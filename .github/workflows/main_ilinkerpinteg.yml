@@ -64,9 +64,13 @@ jobs:
 
       - name: Discover resource group from App Service
         uses: azure/CLI@v1
+        env:
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/azure-cli
         with:
           azcliversion: 2.64.0
           inlineScript: |
+            mkdir -p "$AZURE_CONFIG_DIR"
+
             echo "=== Azure account context ==="
             az account show --query "{name:name, id:id, tenantId:tenantId}" -o json
 
