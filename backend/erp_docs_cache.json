@@ -1,0 +1,566 @@
+{
+  "oracle_ebs": {
+    "fetched_at": "2026-03-13T14:31:27.614775+00:00",
+    "tables": [
+      {
+        "table_name": "GL_CODE_COMBINATIONS",
+        "description": "Chart of Accounts Segment Combinations",
+        "module_key": "GL",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "GL_BALANCES",
+        "description": "Period Balances",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "GL_JE_HEADERS",
+        "description": "Journal Entry Headers",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "GL_JE_LINES",
+        "description": "Journal Entry Lines",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "RA_CUSTOMER_TRX_ALL",
+        "description": "Customer Transactions (Invoices, DM, CM)",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "AR_PAYMENT_SCHEDULES_ALL",
+        "description": "Payment Schedules per Invoice",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "AR_CASH_RECEIPTS_ALL",
+        "description": "Cash Receipts from Customers",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "HZ_PARTIES",
+        "description": "Party Master Registry",
+        "module_key": "AR",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "HZ_CUST_ACCOUNTS",
+        "description": "Customer Accounts",
+        "module_key": "AR",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "AP_INVOICES_ALL",
+        "description": "Supplier Invoice Headers",
+        "module_key": "AP",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "AP_INVOICE_LINES_ALL",
+        "description": "Supplier Invoice Lines",
+        "module_key": "AP",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "AP_CHECKS_ALL",
+        "description": "Payment Checks/EFT",
+        "module_key": "AP",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "AP_SUPPLIERS",
+        "description": "Supplier Master",
+        "module_key": "AP",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "OE_ORDER_HEADERS_ALL",
+        "description": "Sales Order Headers",
+        "module_key": "OE",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "OE_ORDER_LINES_ALL",
+        "description": "Sales Order Lines",
+        "module_key": "OE",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "MTL_SYSTEM_ITEMS_B",
+        "description": "Item Master",
+        "module_key": "INV",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "MTL_ONHAND_QUANTITIES_DETAIL",
+        "description": "On-hand Inventory Quantities",
+        "module_key": "INV",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PO_HEADERS_ALL",
+        "description": "Purchase Order Headers",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PO_LINES_ALL",
+        "description": "Purchase Order Lines",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PER_ALL_PEOPLE_F",
+        "description": "Employee Personal Data",
+        "module_key": "HCM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "PAY_PAYROLL_ACTIONS",
+        "description": "Payroll Run Actions",
+        "module_key": "HCM",
+        "layer_hint": "transaction",
+        "is_core": true
+      }
+    ]
+  },
+  "sap_s4hana": {
+    "fetched_at": "2026-03-13T14:31:32.957029+00:00",
+    "tables": [
+      {
+        "table_name": "ACDOCA",
+        "description": "Universal Journal Entry Line Items (S/4HANA)",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "ACDOCP",
+        "description": "Plan Data Universal Journal",
+        "module_key": "CO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "SKA1",
+        "description": "G/L Account Master (Chart of Accounts)",
+        "module_key": "FI",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "SKAT",
+        "description": "G/L Account Master Record — Description",
+        "module_key": "FI",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "FAGLFLEXA",
+        "description": "General Ledger: Items",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "BKPF",
+        "description": "Accounting Document Header",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "BSEG",
+        "description": "Accounting Document Segment",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "MARA",
+        "description": "General Material Data",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "MARC",
+        "description": "Plant Data for Material",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "KNA1",
+        "description": "General Data in Customer Master",
+        "module_key": "SD",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LFA1",
+        "description": "Vendor Master (General Section)",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LIKP",
+        "description": "SD Document: Delivery Header Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "LIPS",
+        "description": "SD document: Delivery: Item data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "VBAK",
+        "description": "Sales Document: Header Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "VBAP",
+        "description": "Sales Document: Item Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      }
+    ]
+  },
+  "sap_ecc": {
+    "fetched_at": "2026-03-13T14:31:35.384310+00:00",
+    "tables": [
+      {
+        "table_name": "ACDOCA",
+        "description": "Universal Journal Entry Line Items (S/4HANA)",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "ACDOCP",
+        "description": "Plan Data Universal Journal",
+        "module_key": "CO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "SKA1",
+        "description": "G/L Account Master (Chart of Accounts)",
+        "module_key": "FI",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "SKAT",
+        "description": "G/L Account Master Record — Description",
+        "module_key": "FI",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "FAGLFLEXA",
+        "description": "General Ledger: Items",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "BKPF",
+        "description": "Accounting Document Header",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "BSEG",
+        "description": "Accounting Document Segment",
+        "module_key": "FI",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "MARA",
+        "description": "General Material Data",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "MARC",
+        "description": "Plant Data for Material",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "KNA1",
+        "description": "General Data in Customer Master",
+        "module_key": "SD",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LFA1",
+        "description": "Vendor Master (General Section)",
+        "module_key": "MM",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LIKP",
+        "description": "SD Document: Delivery Header Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "LIPS",
+        "description": "SD document: Delivery: Item data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "VBAK",
+        "description": "Sales Document: Header Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "VBAP",
+        "description": "Sales Document: Item Data",
+        "module_key": "SD",
+        "layer_hint": "transaction",
+        "is_core": true
+      }
+    ]
+  },
+  "dynamics_365_fo": {
+    "fetched_at": "2026-03-13T14:31:37.345142+00:00",
+    "tables": [
+      {
+        "table_name": "GENERALJOURNALENTRY",
+        "description": "General Journal Entry Header",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "GENERALJOURNALACCOUNTENTRY",
+        "description": "General Journal Account Entry Line",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "MAINACCOUNT",
+        "description": "Chart of Accounts - Main Account",
+        "module_key": "GL",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LEDGERTABLE",
+        "description": "Ledger Configuration",
+        "module_key": "GL",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTINVOICETABLE",
+        "description": "Customer Invoice Header",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTINVOICETRANS",
+        "description": "Customer Invoice Lines",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTTABLE",
+        "description": "Customer Master",
+        "module_key": "AR",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "VENDTABLE",
+        "description": "Vendor Master",
+        "module_key": "AP",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "VENDINVOICEJOUR",
+        "description": "Vendor Invoice Journal Header",
+        "module_key": "AP",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "INVENTTABLE",
+        "description": "Item / Product Master",
+        "module_key": "INV",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "INVENTTRANS",
+        "description": "Inventory Transactions",
+        "module_key": "INV",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PURCHLINE",
+        "description": "Purchase Order Lines",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PURCHTABLE",
+        "description": "Purchase Order Header",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      }
+    ]
+  },
+  "dynamics_bc": {
+    "fetched_at": "2026-03-13T14:31:40.611750+00:00",
+    "tables": [
+      {
+        "table_name": "GENERALJOURNALENTRY",
+        "description": "General Journal Entry Header",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "GENERALJOURNALACCOUNTENTRY",
+        "description": "General Journal Account Entry Line",
+        "module_key": "GL",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "MAINACCOUNT",
+        "description": "Chart of Accounts - Main Account",
+        "module_key": "GL",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "LEDGERTABLE",
+        "description": "Ledger Configuration",
+        "module_key": "GL",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTINVOICETABLE",
+        "description": "Customer Invoice Header",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTINVOICETRANS",
+        "description": "Customer Invoice Lines",
+        "module_key": "AR",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "CUSTTABLE",
+        "description": "Customer Master",
+        "module_key": "AR",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "VENDTABLE",
+        "description": "Vendor Master",
+        "module_key": "AP",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "VENDINVOICEJOUR",
+        "description": "Vendor Invoice Journal Header",
+        "module_key": "AP",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "INVENTTABLE",
+        "description": "Item / Product Master",
+        "module_key": "INV",
+        "layer_hint": "master",
+        "is_core": true
+      },
+      {
+        "table_name": "INVENTTRANS",
+        "description": "Inventory Transactions",
+        "module_key": "INV",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PURCHLINE",
+        "description": "Purchase Order Lines",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      },
+      {
+        "table_name": "PURCHTABLE",
+        "description": "Purchase Order Header",
+        "module_key": "PO",
+        "layer_hint": "transaction",
+        "is_core": true
+      }
+    ]
+  }
+}

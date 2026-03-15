@@ -3,4 +3,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+
+# Azure Web App for Containers (and other platforms) will typically set the PORT
+# environment variable; default to 8001 for local development.
+ENV PORT=8001
+
+EXPOSE 8001
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8001}"]

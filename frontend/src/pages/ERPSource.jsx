@@ -12,7 +12,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import {
   Server, Database, CheckCircle2, AlertTriangle, XCircle,
-  ChevronRight, ChevronLeft, RefreshCw, PlugZap, Play,
+  ChevronRight, ChevronLeft, ArrowRight, RefreshCw, PlugZap, Play,
   FileCode, GitBranch, Cloud, Info, Circle, Eye, EyeOff,
   Zap, Layers, Table2, Link2, Shield, Package, LayoutDashboard,
   Search, ListChecks, ExternalLink, Key, Monitor, User,
@@ -484,6 +484,8 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
   const [scanResult,     setScanResult]     = useState(null);  // { found:[], missing:[], method, note, error }
   const [selectedTables, setSelectedTables] = useState([]); // table_name strings
   const [filter,         setFilter]         = useState("");  // search filter
+  const [expandedCols,   setExpandedCols]   = useState(null); // table_name whose columns are expanded
+  const [copiedCols,     setCopiedCols]     = useState(null); // brief "copied!" feedback
 
   const { data: stdData, isLoading } = useQuery({
     queryKey: ["tables", wizard.source, wizard.module],
@@ -733,7 +735,7 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
             <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
               <tr style={{ background: "#f8fafc",
                            borderBottom: "1px solid var(--color-border)" }}>
-                {["", "#", "Table Name", "Description", "Type", "Status"].map(h => (
+                {["", "#", "Table Name", "Description", "Type", "Status", "Columns"].map(h => (
                   <th key={h} style={{ padding: "9px 12px", textAlign: "left",
                                        fontSize: 11, fontWeight: 600, color: "#64748b" }}>
                     {h}
@@ -743,14 +745,20 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
             </thead>
             <tbody>
               {display.map((t, i) => {
-                const checked  = selectedTables.includes(t.table_name);
-                const isMissing = scanned && !t.found;
+                const checked    = selectedTables.includes(t.table_name);
+                const isMissing  = scanned && !t.found;
+                const cols       = t.columns ?? [];           // string[] if backend provides them
+                const colCsv     = cols.join(", ");
+                const isColOpen  = expandedCols === t.table_name;
+                const silverName = _guessTargetName(t.table_name);
+                const bizName    = _guessBusinessName(t.table_name);
                 return (
+                  <>
                   <tr
                     key={t.table_name}
                     onClick={() => !isMissing && toggleTable(t.table_name)}
                     style={{
-                      borderBottom: "1px solid #f1f5f9",
+                      borderBottom: isColOpen ? "none" : "1px solid #f1f5f9",
                       background: isMissing   ? "#fffbeb"
                                 : checked     ? "rgba(8,145,178,0.04)"
                                 :               "white",
@@ -774,14 +782,15 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
                                  width: 32 }}>
                       {i + 1}
                     </td>
-                    <td style={{ padding: "9px 12px", fontFamily: "monospace",
-                                 fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
-                      {t.table_name}
+                    <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>
+                      <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 600 }}>{t.table_name}</div>
+                      <div style={{ fontSize: 10, color: "#6366f1", marginTop: 1 }}>→ {silverName}</div>
                     </td>
                     <td style={{ padding: "9px 12px", fontSize: 12, color: "#64748b",
-                                 maxWidth: 280, overflow: "hidden",
+                                 maxWidth: 240, overflow: "hidden",
                                  textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {t.description}
+                      <div style={{ fontWeight: 500, color: "#374151", fontSize: 12 }}>{bizName}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description}</div>
                     </td>
                     <td style={{ padding: "9px 12px" }}>
                       <span className={t.is_core ? "badge badge-cyan" : "badge badge-gray"}
@@ -807,7 +816,46 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
                         </span>
                       )}
                     </td>
+                    {/* Columns CSV cell */}
+                    <td style={{ padding: "9px 12px" }} onClick={e => e.stopPropagation()}>
+                      {cols.length > 0 ? (
+                        <button
+                          onClick={() => setExpandedCols(isColOpen ? null : t.table_name)}
+                          style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 10, fontWeight: 600, borderRadius: 6, border: "1px solid #c7d2fe", background: isColOpen ? "#e0e7ff" : "#f5f3ff", color: "#4338ca", cursor: "pointer", whiteSpace: "nowrap" }}>
+                          <Table2 size={9} /> {cols.length} cols {isColOpen ? "▲" : "▼"}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 10, color: "#cbd5e1" }}>—</span>
+                      )}
+                    </td>
                   </tr>
+                  {/* Expanded columns row */}
+                  {isColOpen && cols.length > 0 && (
+                    <tr key={`${t.table_name}-cols`} style={{ background: "#fafafa", borderBottom: "1px solid #f1f5f9" }}>
+                      <td colSpan={7} style={{ padding: "8px 16px 12px 56px" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: "#6366f1", marginBottom: 4 }}>
+                              Columns as CSV — {t.table_name} ({cols.length} columns)
+                            </div>
+                            <div style={{ fontFamily: "monospace", fontSize: 11, color: "#374151", background: "#f1f5f9", padding: "7px 10px", borderRadius: 6, border: "1px solid #e2e8f0", lineHeight: 1.8, wordBreak: "break-all" }}>
+                              {colCsv}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(colCsv).catch(() => {});
+                              setCopiedCols(t.table_name);
+                              setTimeout(() => setCopiedCols(null), 1800);
+                            }}
+                            style={{ padding: "5px 10px", fontSize: 10, fontWeight: 700, borderRadius: 6, border: "1px solid #c7d2fe", background: copiedCols === t.table_name ? "#dcfce7" : "#e0e7ff", color: copiedCols === t.table_name ? "#15803d" : "#4338ca", cursor: "pointer", whiteSpace: "nowrap", marginTop: 20 }}>
+                            {copiedCols === t.table_name ? "✓ Copied!" : <><Copy size={9} style={{ display: "inline", marginRight: 3 }} />Copy CSV</>}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </>
                 );
               })}
             </tbody>
@@ -2115,25 +2163,174 @@ const DIM_SUGGESTIONS_BY_ERP = {
   },
 };
 
+// ── Business-friendly Silver target name lookup for known ERP tables ──────────
+// Prevents generic "bkpf_dim" type names — maps raw ERP table → proper Silver name + type.
+// Sources: SAP SE Table Catalog, D365 AOT, Oracle EBS Data Model, NetSuite Schema Browser, Workday Fields.
+const ERP_TABLE_BUSINESS_NAMES = {
+  // ── SAP ECC / S4HANA ────────────────────────────────────────────────────────
+  ACDOCA:   { targetName: "fact_gl_universal_journal",    type: "fact", businessName: "GL Universal Journal (S/4HANA)"   },
+  ACDOCP:   { targetName: "fact_gl_plan_journal",         type: "fact", businessName: "GL Plan Journal (S/4HANA)"        },
+  BKPF:     { targetName: "dim_accounting_document",      type: "dim",  businessName: "Accounting Document Header"       },
+  BSEG:     { targetName: "fact_gl_transactions",         type: "fact", businessName: "GL Line Items"                    },
+  BSID:     { targetName: "fact_ar_open_items",           type: "fact", businessName: "AR Open Items"                    },
+  BSAD:     { targetName: "fact_ar_cleared_items",        type: "fact", businessName: "AR Cleared Items"                 },
+  BSIK:     { targetName: "fact_ap_open_items",           type: "fact", businessName: "AP Open Items"                    },
+  BSAK:     { targetName: "fact_ap_cleared_items",        type: "fact", businessName: "AP Cleared Items"                 },
+  SKA1:     { targetName: "dim_gl_account",               type: "dim",  businessName: "GL Account Master"                },
+  SKAT:     { targetName: "dim_gl_account_description",   type: "dim",  businessName: "GL Account Text"                  },
+  T001:     { targetName: "dim_company_code",             type: "dim",  businessName: "Company Code"                     },
+  T001W:    { targetName: "dim_plant",                    type: "dim",  businessName: "Plant / Warehouse"                },
+  T009B:    { targetName: "dim_fiscal_period",            type: "dim",  businessName: "Fiscal Year Periods"              },
+  TCURR:    { targetName: "dim_currency_rate",            type: "dim",  businessName: "Exchange Rates"                   },
+  // SD
+  VBAK:     { targetName: "fact_sales_order_header",      type: "fact", businessName: "Sales Order Header"               },
+  VBAP:     { targetName: "fact_sales_order_items",       type: "fact", businessName: "Sales Order Items"                },
+  VBRK:     { targetName: "fact_billing_header",          type: "fact", businessName: "Billing Document Header"          },
+  VBRP:     { targetName: "fact_billing_items",           type: "fact", businessName: "Billing Document Items"           },
+  LIKP:     { targetName: "fact_delivery_header",         type: "fact", businessName: "Delivery / Shipment Header"       },
+  LIPS:     { targetName: "fact_delivery_items",          type: "fact", businessName: "Delivery / Shipment Items"        },
+  KNA1:     { targetName: "dim_customer",                 type: "dim",  businessName: "Customer Master"                  },
+  KNVV:     { targetName: "dim_customer_sales_area",      type: "dim",  businessName: "Customer Sales Area Data"         },
+  KNVP:     { targetName: "dim_customer_partner",         type: "dim",  businessName: "Customer Partner Functions"       },
+  TVKOT:    { targetName: "dim_sales_organization",       type: "dim",  businessName: "Sales Organization"               },
+  // MM
+  MARA:     { targetName: "dim_material",                 type: "dim",  businessName: "Material Master (General)"        },
+  MARC:     { targetName: "dim_material_plant",           type: "dim",  businessName: "Material Master (Plant)"          },
+  MAKT:     { targetName: "dim_material_description",     type: "dim",  businessName: "Material Description"             },
+  MBEW:     { targetName: "dim_material_valuation",       type: "dim",  businessName: "Material Valuation"               },
+  MARD:     { targetName: "fact_stock_on_hand",           type: "fact", businessName: "Stock on Hand (by Location)"      },
+  MKPF:     { targetName: "dim_material_document",        type: "dim",  businessName: "Material Document Header"         },
+  MSEG:     { targetName: "fact_material_document_items", type: "fact", businessName: "Material Document Items"          },
+  MATDOC:   { targetName: "fact_material_document",       type: "fact", businessName: "Material Document (S/4HANA)"      },
+  // MM Purchasing
+  EKKO:     { targetName: "fact_purchase_order_header",   type: "fact", businessName: "Purchase Order Header"            },
+  EKPO:     { targetName: "fact_purchase_order_items",    type: "fact", businessName: "Purchase Order Items"             },
+  EKKN:     { targetName: "fact_po_account_assignment",   type: "fact", businessName: "PO Account Assignment"            },
+  // FI-AP/LIV
+  RBKP:     { targetName: "fact_invoice_header",          type: "fact", businessName: "Invoice Document Header (LIV)"    },
+  RSEG:     { targetName: "fact_invoice_items",           type: "fact", businessName: "Invoice Document Items (LIV)"     },
+  PAYR:     { targetName: "fact_payment_run",             type: "fact", businessName: "Payment Run"                      },
+  LFA1:     { targetName: "dim_vendor",                   type: "dim",  businessName: "Vendor Master (General)"          },
+  LFB1:     { targetName: "dim_vendor_company_code",      type: "dim",  businessName: "Vendor Master (Company Code)"     },
+  LFM1:     { targetName: "dim_vendor_purchasing_org",    type: "dim",  businessName: "Vendor Master (Purchasing Org)"   },
+  T052:     { targetName: "dim_payment_terms",            type: "dim",  businessName: "Payment Terms"                    },
+  // HR
+  PA0001:   { targetName: "dim_employee_org",             type: "dim",  businessName: "Employee Org Assignment"          },
+  PA0002:   { targetName: "dim_employee_personal",        type: "dim",  businessName: "Employee Personal Data"           },
+  PA0006:   { targetName: "dim_employee_address",         type: "dim",  businessName: "Employee Address"                 },
+  PA0007:   { targetName: "dim_employee_work_time",       type: "dim",  businessName: "Employee Planned Work Time"       },
+  PA0008:   { targetName: "fact_employee_compensation",   type: "fact", businessName: "Employee Compensation"            },
+  PA0000:   { targetName: "fact_hr_actions",              type: "fact", businessName: "HR Actions (Hire/Transfer/Term)"  },
+  PA2001:   { targetName: "fact_absence",                 type: "fact", businessName: "Absence & Attendance"             },
+  HRP1000:  { targetName: "dim_org_unit",                 type: "dim",  businessName: "Org Unit / Position Master"       },
+  HRP1001:  { targetName: "dim_org_relationship",         type: "dim",  businessName: "Org Object Relationships"         },
+  // ── Oracle EBS ──────────────────────────────────────────────────────────────
+  GL_JE_LINES:               { targetName: "fact_gl_journal_lines",     type: "fact", businessName: "GL Journal Lines"               },
+  GL_JE_HEADERS:             { targetName: "dim_gl_journal_header",     type: "dim",  businessName: "GL Journal Header"               },
+  GL_CODE_COMBINATIONS:      { targetName: "dim_gl_account_combination",type: "dim",  businessName: "GL Account Combination (CCID)"   },
+  GL_BALANCES:               { targetName: "fact_gl_balances",          type: "fact", businessName: "GL Account Balances"             },
+  FND_FLEX_VALUES:            { targetName: "dim_flexfield_value",       type: "dim",  businessName: "Flexfield Values"                },
+  RA_CUSTOMERS:              { targetName: "dim_customer",               type: "dim",  businessName: "Customer Master"                 },
+  HZ_CUST_ACCOUNTS:          { targetName: "dim_customer_account",       type: "dim",  businessName: "Customer Account"                },
+  HZ_PARTIES:                { targetName: "dim_party",                  type: "dim",  businessName: "Party (Person/Org)"              },
+  AR_PAYMENT_SCHEDULES_ALL:  { targetName: "fact_ar_schedule",          type: "fact", businessName: "AR Payment Schedule"             },
+  AP_INVOICES_ALL:           { targetName: "fact_ap_invoices",           type: "fact", businessName: "AP Invoice Header"               },
+  AP_INVOICE_LINES_ALL:      { targetName: "fact_ap_invoice_lines",      type: "fact", businessName: "AP Invoice Lines"                },
+  AP_INVOICE_DISTRIBUTIONS_ALL: { targetName: "fact_ap_distributions",  type: "fact", businessName: "AP Invoice Distributions"        },
+  AP_SUPPLIERS:              { targetName: "dim_supplier",               type: "dim",  businessName: "Supplier Master"                 },
+  AP_SUPPLIER_SITES_ALL:     { targetName: "dim_supplier_site",          type: "dim",  businessName: "Supplier Site"                   },
+  PO_HEADERS_ALL:            { targetName: "fact_po_header",             type: "fact", businessName: "PO Header"                       },
+  PO_LINES_ALL:              { targetName: "fact_po_lines",              type: "fact", businessName: "PO Lines"                        },
+  PO_LINE_LOCATIONS_ALL:     { targetName: "fact_po_shipment",           type: "fact", businessName: "PO Shipment / Schedule"          },
+  PO_DISTRIBUTIONS_ALL:      { targetName: "fact_po_distribution",       type: "fact", businessName: "PO Distributions"                },
+  MTL_SYSTEM_ITEMS_B:        { targetName: "dim_item",                   type: "dim",  businessName: "Inventory Item Master"           },
+  MTL_ITEM_LOCATIONS:        { targetName: "dim_item_location",          type: "dim",  businessName: "Inventory Item Locations"        },
+  MTL_ONHAND_QUANTITIES_DETAIL: { targetName: "fact_inventory_onhand",  type: "fact", businessName: "Inventory On-Hand Quantity"      },
+  MTL_MATERIAL_TRANSACTIONS: { targetName: "fact_inventory_movements",   type: "fact", businessName: "Inventory Transactions"          },
+  OE_ORDER_HEADERS_ALL:      { targetName: "fact_sales_order_header",    type: "fact", businessName: "Sales Order Header"              },
+  OE_ORDER_LINES_ALL:        { targetName: "fact_sales_order_lines",     type: "fact", businessName: "Sales Order Lines"               },
+  PER_ALL_PEOPLE_F:          { targetName: "dim_person",                 type: "dim",  businessName: "Person Master (HR)"              },
+  PER_ALL_ASSIGNMENTS_F:     { targetName: "fact_employee_assignment",   type: "fact", businessName: "Employee Assignment"             },
+  HR_ALL_ORGANIZATION_UNITS: { targetName: "dim_organization_unit",      type: "dim",  businessName: "Organization Unit"               },
+  // ── Microsoft Dynamics 365 F&O ──────────────────────────────────────────────
+  GeneralJournalAccountEntry:{ targetName: "fact_gl_account_entry",      type: "fact", businessName: "GL Account Entry"                },
+  GeneralJournalEntry:       { targetName: "dim_journal_entry",          type: "dim",  businessName: "General Journal Entry"           },
+  MainAccount:               { targetName: "dim_main_account",           type: "dim",  businessName: "Chart of Accounts"               },
+  FiscalCalendarPeriod:      { targetName: "dim_fiscal_period",          type: "dim",  businessName: "Fiscal Calendar Period"          },
+  FiscalCalendarYear:        { targetName: "dim_fiscal_year",            type: "dim",  businessName: "Fiscal Year"                     },
+  CustTrans:                 { targetName: "fact_ar_transactions",        type: "fact", businessName: "Customer AR Transactions"        },
+  CustTransOpen:             { targetName: "fact_ar_open_items",          type: "fact", businessName: "Customer AR Open Items"          },
+  CustInvoiceJour:           { targetName: "dim_customer_invoice",        type: "dim",  businessName: "Customer Invoice Header"         },
+  CustInvoiceTrans:          { targetName: "fact_ar_invoice_lines",       type: "fact", businessName: "Customer Invoice Lines"          },
+  VendTrans:                 { targetName: "fact_ap_transactions",        type: "fact", businessName: "Vendor AP Transactions"          },
+  VendTransOpen:             { targetName: "fact_ap_open_items",          type: "fact", businessName: "Vendor AP Open Items"            },
+  VendInvoiceJour:           { targetName: "dim_vendor_invoice",          type: "dim",  businessName: "Vendor Invoice Header"           },
+  VendInvoiceTrans:          { targetName: "fact_ap_invoice_lines",       type: "fact", businessName: "Vendor Invoice Lines"            },
+  VendInvoiceInfoTable:      { targetName: "fact_ap_pending_invoices",    type: "fact", businessName: "AP Pending Invoice Header"       },
+  CustTable:                 { targetName: "dim_customer",                type: "dim",  businessName: "Customer Master"                 },
+  VendTable:                 { targetName: "dim_vendor",                  type: "dim",  businessName: "Vendor Master"                   },
+  DirPartyTable:             { targetName: "dim_party",                   type: "dim",  businessName: "Party / Legal Entity"            },
+  LogisticsPostalAddress:    { targetName: "dim_address",                 type: "dim",  businessName: "Postal Address"                  },
+  EcoResProduct:             { targetName: "dim_product",                 type: "dim",  businessName: "Released Product Master"         },
+  EcoResProductTranslation:  { targetName: "dim_product_translation",     type: "dim",  businessName: "Product Translation"             },
+  InventTable:               { targetName: "dim_item",                    type: "dim",  businessName: "Inventory Item"                  },
+  InventTrans:               { targetName: "fact_inventory_transaction",  type: "fact", businessName: "Inventory Transactions"          },
+  InventDim:                 { targetName: "dim_inventory_dimension",     type: "dim",  businessName: "Inventory Dimension"             },
+  InventSum:                 { targetName: "fact_inventory_onhand",       type: "fact", businessName: "Inventory On-Hand Summary"       },
+  InventLocation:            { targetName: "dim_warehouse",               type: "dim",  businessName: "Inventory Location / Warehouse"  },
+  InventItemGroupItem:       { targetName: "dim_item_group",              type: "dim",  businessName: "Item Group"                      },
+  SalesTable:                { targetName: "fact_sales_order",            type: "fact", businessName: "Sales Order Header"              },
+  SalesLine:                 { targetName: "fact_sales_order_lines",      type: "fact", businessName: "Sales Order Lines"               },
+  PurchTable:                { targetName: "fact_purchase_order",         type: "fact", businessName: "Purchase Order Header"           },
+  PurchLine:                 { targetName: "fact_purchase_order_lines",   type: "fact", businessName: "Purchase Order Lines"            },
+  HcmWorker:                 { targetName: "dim_worker",                  type: "dim",  businessName: "Worker / Employee Master"        },
+  HcmEmployment:             { targetName: "fact_employment",             type: "fact", businessName: "Employment Record"               },
+  HcmPosition:               { targetName: "dim_position",               type: "dim",  businessName: "Position Master"                 },
+  HcmDepartment:             { targetName: "dim_department",             type: "dim",  businessName: "Department"                      },
+  DirPersonName:             { targetName: "dim_person_name",            type: "dim",  businessName: "Person Name"                     },
+};
+
+// ── Derive Silver target name + type from raw ERP table name ─────────────────
+// 1) Known ERP table → ERP_TABLE_BUSINESS_NAMES lookup (exact, then normalised)
+// 2) Fallback: prefix stripping heuristic
 function _guessTableType(t) {
+  const key = t.replace(/_ALL$/i,"").replace(/_B$/i,"").replace(/_F$/i,"");
+  if (ERP_TABLE_BUSINESS_NAMES[key]) return ERP_TABLE_BUSINESS_NAMES[key].type;
+  if (ERP_TABLE_BUSINESS_NAMES[t])   return ERP_TABLE_BUSINESS_NAMES[t].type;
   const n = t.toLowerCase();
   if (n.startsWith("fact_") || n.endsWith("_all") || n.includes("_transaction") ||
       n.includes("_lines") || n.includes("_history") || n.includes("_je_")) return "fact";
   return "dim";
 }
 function _guessTargetName(t) {
+  // 1) Exact match
+  if (ERP_TABLE_BUSINESS_NAMES[t])
+    return ERP_TABLE_BUSINESS_NAMES[t].targetName;
+  // 2) Strip common Oracle/SAP suffixes and retry
+  const normalised = t.replace(/_ALL$/i,"").replace(/_B$/i,"").replace(/_F$/i,"").replace(/_TL$/i,"");
+  if (ERP_TABLE_BUSINESS_NAMES[normalised])
+    return ERP_TABLE_BUSINESS_NAMES[normalised].targetName;
+  // 3) Heuristic fallback: strip module prefixes and produce meaningful name
   const type = _guessTableType(t);
-  const cleaned = t.toLowerCase()
-    .replace(/_all$/,"").replace(/_b$/,"").replace(/_f$/,"").replace(/_tl$/,"")
-    .replace(/^oe_/,"").replace(/^hz_/,"").replace(/^mtl_/,"")
-    .replace(/^per_/,"").replace(/^hr_/,"").replace(/^gl_/,"")
-    .replace(/^ap_/,"").replace(/^ar_/,"").replace(/^po_/,"")
-    .replace(/^ra_/,"").replace(/^fnd_/,"").replace(/^org_/,"");
+  const cleaned = normalised.toLowerCase()
+    .replace(/^oe_/,"orders_").replace(/^hz_/,"party_").replace(/^mtl_/,"inventory_")
+    .replace(/^per_/,"hr_").replace(/^hr_/,"hr_").replace(/^gl_/,"gl_")
+    .replace(/^ap_/,"ap_").replace(/^ar_/,"ar_").replace(/^po_/,"po_")
+    .replace(/^ra_/,"ar_").replace(/^fnd_/,"").replace(/^org_/,"org_")
+    .replace(/^hcm/,"hr_").replace(/^inv/,"inv_");
   return (type === "fact" ? "fact_" : "dim_") + (cleaned || t.toLowerCase());
 }
+function _guessBusinessName(t) {
+  // 1) Known lookup
+  if (ERP_TABLE_BUSINESS_NAMES[t])                        return ERP_TABLE_BUSINESS_NAMES[t].businessName;
+  const normalised = t.replace(/_ALL$/i,"").replace(/_B$/i,"").replace(/_F$/i,"");
+  if (ERP_TABLE_BUSINESS_NAMES[normalised])               return ERP_TABLE_BUSINESS_NAMES[normalised].businessName;
+  // 2) Humanise fallback
+  return normalised.replace(/_/g," ").split(" ")
+    .map(w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(" ");
+}
 function _humanize(t) {
-  return t.replace(/_all$/i,"").replace(/_b$/i,"").replace(/_f$/i,"")
-    .replace(/_/g," ").split(" ").map(w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(" ");
+  return _guessBusinessName(t);
 }
 
 // ── Step 5: Deploy ────────────────────────────────────────────────────────────
@@ -2917,36 +3114,80 @@ function StepDeploy({ wizard, onBack }) {
                 </div>
               )}
 
-              {tables.length > 0 && opts.silver && (
+              {opts.silver && dimMappings.filter(m => m.enabled).length > 0 && (
                 <div className="card" style={{ padding: 20 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
                     <Code size={14} style={{ color: "#2563eb" }} /> Silver SQL Transform
-                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — applied on top of default transform)</span>
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — custom SQL per Bronze→Silver mapping)</span>
                   </h3>
+                  <p style={{ fontSize: 11, color: "#64748b", marginBottom: 12, marginTop: 0 }}>
+                    Each row shows the Bronze source table(s) and their Silver target table. SQL runs inside the Silver notebook to create conformed dim/fact tables.
+                  </p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {tables.map(t => (
-                      <div key={t} style={{ border: "1px solid", borderColor: sqlConfig[t]?.silver?.trim() ? "#93c5fd" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: sqlConfig[t]?.silver?.trim() ? "#f0f9ff" : "white" }} onClick={() => setSqlExpandedTable(sqlExpandedTable === `s-${t}` ? null : `s-${t}`)}>
-                          <Table2 size={12} style={{ color: "#2563eb" }} />
-                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
-                          {sqlConfig[t]?.silver?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#dbeafe", color: "#1d4ed8", fontWeight: 600 }}>SQL set</span>}
-                          {standardSql.silver?.[t] && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#f0fdf4", color: "#15803d", fontWeight: 600 }}>Standard ✓</span>}
-                          {sqlExpandedTable === `s-${t}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
-                        </div>
-                        {sqlExpandedTable === `s-${t}` && (
-                          <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
-                            <textarea placeholder={`SELECT DISTINCT *\nFROM bronze.${t.toLowerCase()}\nWHERE 1=1  -- add cleansing filters`} value={sqlConfig[t]?.silver ?? ""} onChange={e => setSqlConfig(p => ({ ...p, [t]: { ...(p[t] ?? {}), silver: e.target.value } }))} style={{ width: "100%", height: 90, fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc" }} />
-                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
-                              <span style={{ fontSize: 11, color: "#94a3b8" }}>Transform SQL reading from bronze layer</span>
-                              <div style={{ display: "flex", gap: 8 }}>
-                                {standardSql.silver?.[t] && sqlConfig[t]?.silver !== standardSql.silver[t] && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], silver: standardSql.silver[t] } }))} style={{ fontSize: 11, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>↺ Reset to standard</button>}
-                                {sqlConfig[t]?.silver?.trim() && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], silver: "" } }))} style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>}
+                    {dimMappings.filter(m => m.enabled).map(m => {
+                      const srcTables  = [m.sourceTable, ...(m.additionalSources ?? [])];
+                      const sqlKey     = m.targetName; // keyed by Silver target table name
+                      const joinLines  = m.relationship === "N:1" && m.additionalSources?.length > 0
+                        ? m.additionalSources.map(s => `LEFT JOIN bronze.${s.toLowerCase()} h ON f.join_key = h.join_key`).join("\n") + "\n"
+                        : "";
+                      const phSql = [
+                        `-- 🔄 Bronze → Silver: ${srcTables.join(" + ")} → silver.${m.targetName}`,
+                        `-- Relationship: ${m.relationship} | Type: ${m.type} | ${m.businessName}`,
+                        `CREATE OR REPLACE TABLE silver.${m.targetName} AS`,
+                        `SELECT`,
+                        `  -- TODO: select and rename business columns below`,
+                        `  f.*`,
+                        `FROM bronze.${m.sourceTable.toLowerCase()} f`,
+                        joinLines,
+                        `WHERE 1=1  -- add data quality / business filters`,
+                      ].filter(Boolean).join("\n");
+                      return (
+                        <div key={m.id} style={{ border: "1px solid", borderColor: sqlConfig[sqlKey]?.silver?.trim() ? "#93c5fd" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                          {/* Row header */}
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", cursor: "pointer", background: sqlConfig[sqlKey]?.silver?.trim() ? "#f0f9ff" : "white" }}
+                            onClick={() => setSqlExpandedTable(sqlExpandedTable === `s-${m.id}` ? null : `s-${m.id}`)}>
+                            {/* Bronze source badge(s) */}
+                            <span style={{ fontSize: 10, fontFamily: "monospace", padding: "2px 6px", borderRadius: 4, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", whiteSpace: "nowrap", fontWeight: 600 }}>
+                              🥉 {srcTables.join(" + ")}
+                            </span>
+                            <ArrowRight size={11} style={{ color: "#94a3b8", flexShrink: 0 }} />
+                            {/* Silver target badge */}
+                            <span style={{ fontSize: 10, fontFamily: "monospace", padding: "2px 6px", borderRadius: 4, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #93c5fd", whiteSpace: "nowrap", fontWeight: 700 }}>
+                              🥈 {m.targetName}
+                            </span>
+                            {/* Type badge */}
+                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: m.type === "fact" ? "#e0e7ff" : "#d1fae5", color: m.type === "fact" ? "#4338ca" : "#065f46", fontWeight: 700, textTransform: "uppercase" }}>{m.type}</span>
+                            {/* Relationship badge */}
+                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#f3f4f6", color: "#6b7280", fontWeight: 600 }}>{m.relationship}</span>
+                            <span style={{ fontSize: 11, color: "#64748b", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.businessName}</span>
+                            {sqlConfig[sqlKey]?.silver?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#dbeafe", color: "#1d4ed8", fontWeight: 600, flexShrink: 0 }}>SQL set</span>}
+                            {sqlExpandedTable === `s-${m.id}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
+                          </div>
+                          {/* Expanded editor */}
+                          {sqlExpandedTable === `s-${m.id}` && (
+                            <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
+                              <div style={{ display: "flex", gap: 8, marginBottom: 8, fontSize: 11, flexWrap: "wrap" }}>
+                                <span style={{ color: "#92400e" }}>📥 Bronze: {srcTables.map(s => <code key={s} style={{ background: "#fef3c7", padding: "1px 4px", borderRadius: 3, marginRight: 3, fontFamily: "monospace" }}>{s}</code>)}</span>
+                                <ArrowRight size={11} style={{ color: "#94a3b8" }} />
+                                <span style={{ color: "#1d4ed8" }}>📤 Silver: <code style={{ background: "#eff6ff", padding: "1px 4px", borderRadius: 3, fontFamily: "monospace" }}>silver.{m.targetName}</code></span>
+                              </div>
+                              <textarea
+                                placeholder={phSql}
+                                value={sqlConfig[sqlKey]?.silver ?? ""}
+                                onChange={e => setSqlConfig(p => ({ ...p, [sqlKey]: { ...(p[sqlKey] ?? {}), silver: e.target.value } }))}
+                                style={{ width: "100%", height: 120, fontFamily: "monospace", fontSize: 11, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc", boxSizing: "border-box" }} />
+                              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
+                                <span style={{ fontSize: 10, color: "#94a3b8" }}>Transforms bronze.{m.sourceTable.toLowerCase()} → silver.{m.targetName}</span>
+                                {sqlConfig[sqlKey]?.silver?.trim() && (
+                                  <button onClick={() => setSqlConfig(p => ({ ...p, [sqlKey]: { ...p[sqlKey], silver: "" } }))}
+                                    style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>
+                                )}
                               </div>
                             </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -3033,7 +3274,7 @@ function StepDeploy({ wizard, onBack }) {
                         {kpiExpanded === k.id && (
                           <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                             <div>
-                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name</label>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Target Table Name (Gold)</label>
                               <input type="text" className="input" value={k.targetTable} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, targetTable: e.target.value } : ki))} style={{ fontFamily: "monospace", fontSize: 12 }} />
                             </div>
                             <div>
@@ -3043,6 +3284,26 @@ function StepDeploy({ wizard, onBack }) {
                             <div style={{ gridColumn: "1 / -1" }}>
                               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Description / Aggregation Logic</label>
                               <input type="text" className="input" value={k.description ?? ""} onChange={e => setGoldKpis(kk => kk.map((ki, i) => i === idx ? { ...ki, description: e.target.value } : ki))} placeholder="e.g. SUM revenue by customer, product, month" />
+                            </div>
+                            {/* Lineage: Silver sources feeding this Gold KPI */}
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 6 }}>📐 Medallion Lineage</label>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                <span style={{ padding: "2px 7px", borderRadius: 4, background: "#fef3c7", color: "#92400e", fontWeight: 600 }}>🥉 Bronze</span>
+                                <span style={{ color: "#94a3b8" }}>({tables.length} source tables)</span>
+                                <ArrowRight size={10} style={{ color: "#94a3b8" }} />
+                                <span style={{ padding: "2px 7px", borderRadius: 4, background: "#eff6ff", color: "#1d4ed8", fontWeight: 600 }}>🥈 Silver</span>
+                                <span style={{ color: "#94a3b8" }}>({dimMappings.filter(m=>m.enabled&&m.type==="fact").length} facts + {dimMappings.filter(m=>m.enabled&&m.type==="dim").length} dims)</span>
+                                <ArrowRight size={10} style={{ color: "#94a3b8" }} />
+                                <span style={{ padding: "2px 7px", borderRadius: 4, background: "#fef9c3", color: "#854d0e", fontWeight: 700 }}>🥇 gold.{k.targetTable}</span>
+                              </div>
+                              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                {dimMappings.filter(m => m.enabled).map(m => (
+                                  <span key={m.id} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: m.type === "fact" ? "#eff6ff" : "#f0fdf4", color: m.type === "fact" ? "#1d4ed8" : "#065f46", border: `1px solid ${m.type === "fact" ? "#bfdbfe" : "#a7f3d0"}`, fontFamily: "monospace" }}>
+                                    {m.type === "fact" ? "f:" : "d:"}{m.targetName}
+                                  </span>
+                                ))}
+                              </div>
                             </div>
                           </div>
                         )}
@@ -3084,36 +3345,100 @@ function StepDeploy({ wizard, onBack }) {
                 </div>
               )}
 
-              {tables.length > 0 && opts.gold && (
+              {goldKpis.filter(k => k.enabled).length > 0 && opts.gold && (
                 <div className="card" style={{ padding: 20 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
                     <Code size={14} style={{ color: "#b45309" }} /> Gold SQL Aggregation
-                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(optional — custom aggregate query per table)</span>
+                    <span style={{ fontSize: 11, fontWeight: 400, color: "#64748b" }}>(Silver → Gold: one entry per KPI/aggregate table)</span>
                   </h3>
+                  <p style={{ fontSize: 11, color: "#64748b", marginBottom: 12, marginTop: 0 }}>
+                    Gold reads from Silver dim/fact tables (not Bronze). Each KPI table JOINs Silver facts with Silver dimensions to produce business-ready aggregates.
+                  </p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {tables.map(t => (
-                      <div key={t} style={{ border: "1px solid", borderColor: sqlConfig[t]?.gold?.trim() ? "#fbbf24" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: sqlConfig[t]?.gold?.trim() ? "#fffbeb" : "white" }} onClick={() => setSqlExpandedTable(sqlExpandedTable === `g-${t}` ? null : `g-${t}`)}>
-                          <Table2 size={12} style={{ color: "#b45309" }} />
-                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{t}</span>
-                          {sqlConfig[t]?.gold?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#fef9c3", color: "#854d0e", fontWeight: 600 }}>SQL set</span>}
-                          {standardSql.gold?.[t] && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#f0fdf4", color: "#15803d", fontWeight: 600 }}>Standard ✓</span>}
-                          {sqlExpandedTable === `g-${t}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
-                        </div>
-                        {sqlExpandedTable === `g-${t}` && (
-                          <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
-                            <textarea placeholder={`SELECT date_trunc('month', created_date) AS month,\n       COUNT(*) AS total_count,\n       SUM(amount) AS total_amount\nFROM silver.${t.toLowerCase()}\nGROUP BY 1\nORDER BY 1`} value={sqlConfig[t]?.gold ?? ""} onChange={e => setSqlConfig(p => ({ ...p, [t]: { ...(p[t] ?? {}), gold: e.target.value } }))} style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc" }} />
-                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
-                              <span style={{ fontSize: 11, color: "#94a3b8" }}>Aggregation SQL reading from silver layer</span>
-                              <div style={{ display: "flex", gap: 8 }}>
-                                {standardSql.gold?.[t] && sqlConfig[t]?.gold !== standardSql.gold[t] && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], gold: standardSql.gold[t] } }))} style={{ fontSize: 11, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>↺ Reset to standard</button>}
-                                {sqlConfig[t]?.gold?.trim() && <button onClick={() => setSqlConfig(p => ({ ...p, [t]: { ...p[t], gold: "" } }))} style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>}
+                    {goldKpis.filter(k => k.enabled).map(k => {
+                      // Derive Silver sources from dimMappings: facts first, then dims
+                      const silverFacts = dimMappings.filter(m => m.enabled && m.type === "fact").map(m => m.targetName);
+                      const silverDims  = dimMappings.filter(m => m.enabled && m.type === "dim").map(m => m.targetName);
+                      const primaryFact = silverFacts[0] ?? "fact_source";
+                      const dim1        = silverDims[0];
+                      const dim2        = silverDims[1];
+                      const gran        = (k.granularity ?? goldErl.granularity ?? "monthly").toLowerCase();
+                      const granTrunc   = { daily: "day", weekly: "week", monthly: "month", quarterly: "quarter" }[gran] ?? "month";
+                      const phSql = [
+                        `-- 🥇 Silver → Gold: silver tables → gold.${k.targetTable}`,
+                        `-- ${k.businessName} | Granularity: ${k.granularity ?? goldErl.granularity}`,
+                        `-- Sources: ${[primaryFact, ...(dim1 ? [dim1] : []), ...(dim2 ? [dim2] : [])].map(n => "silver." + n).join(", ")}`,
+                        ``,
+                        `CREATE OR REPLACE TABLE gold.${k.targetTable} AS`,
+                        `SELECT`,
+                        `  date_trunc('${granTrunc}', f.transaction_date)  AS period_${gran},`,
+                        dim1 ? `  d1.${dim1.replace(/^dim_/,"")}${dim1.replace(/^dim_/,"").length > 0 ? "_name" : ""}  AS ${dim1.replace(/^dim_/,"")}_name,` : null,
+                        dim2 ? `  d2.${dim2.replace(/^dim_/,"")}${dim2.replace(/^dim_/,"").length > 0 ? "_name" : ""}  AS ${dim2.replace(/^dim_/,"")}_name,` : null,
+                        `  COUNT(*)               AS record_count,`,
+                        `  SUM(f.amount)           AS total_amount,`,
+                        `  AVG(f.amount)           AS avg_amount`,
+                        `FROM silver.${primaryFact} f`,
+                        dim1 ? `LEFT JOIN silver.${dim1} d1 ON f.${dim1.replace(/^dim_/,"")}_key = d1.${dim1.replace(/^dim_/,"")}_key` : null,
+                        dim2 ? `LEFT JOIN silver.${dim2} d2 ON f.${dim2.replace(/^dim_/,"")}_key = d2.${dim2.replace(/^dim_/,"")}_key` : null,
+                        `GROUP BY ALL`,
+                        `ORDER BY period_${gran}`,
+                      ].filter(l => l !== null).join("\n");
+                      return (
+                        <div key={k.id} style={{ border: "1px solid", borderColor: sqlConfig[k.targetTable]?.gold?.trim() ? "#fbbf24" : "#e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                          {/* Row header */}
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", cursor: "pointer", background: sqlConfig[k.targetTable]?.gold?.trim() ? "#fffbeb" : "white" }}
+                            onClick={() => setSqlExpandedTable(sqlExpandedTable === `g-${k.id}` ? null : `g-${k.id}`)}>
+                            {/* Silver fact source(s) */}
+                            {silverFacts.slice(0,2).map(sf => (
+                              <span key={sf} style={{ fontSize: 10, fontFamily: "monospace", padding: "2px 5px", borderRadius: 4, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", whiteSpace: "nowrap", fontWeight: 600 }}>
+                                🥈 {sf}
+                              </span>
+                            ))}
+                            {silverDims.length > 0 && (
+                              <span style={{ fontSize: 10, color: "#64748b", whiteSpace: "nowrap" }}>+{silverDims.length} dim{silverDims.length > 1 ? "s" : ""}</span>
+                            )}
+                            <ArrowRight size={11} style={{ color: "#94a3b8", flexShrink: 0 }} />
+                            {/* Gold target */}
+                            <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 700, color: "#854d0e", background: "#fef9c3", padding: "2px 6px", borderRadius: 4, border: "1px solid #fde68a", whiteSpace: "nowrap" }}>
+                              🥇 {k.targetTable}
+                            </span>
+                            <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#fef9c3", color: "#854d0e", fontWeight: 600, border: "1px solid #fde68a", flexShrink: 0 }}>{k.granularity ?? goldErl.granularity}</span>
+                            <span style={{ fontSize: 11, color: "#64748b", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{k.businessName}</span>
+                            {sqlConfig[k.targetTable]?.gold?.trim() && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "#fef9c3", color: "#854d0e", fontWeight: 600, flexShrink: 0 }}>SQL set</span>}
+                            {sqlExpandedTable === `g-${k.id}` ? <ChevronUp size={12} style={{ color: "#94a3b8" }} /> : <ChevronDown size={12} style={{ color: "#94a3b8" }} />}
+                          </div>
+                          {/* Expanded editor */}
+                          {sqlExpandedTable === `g-${k.id}` && (
+                            <div style={{ borderTop: "1px solid #e2e8f0", padding: 12 }}>
+                              {/* Silver source pills */}
+                              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", fontSize: 11 }}>
+                                <span style={{ color: "#64748b", fontWeight: 600 }}>📥 Silver facts:</span>
+                                {silverFacts.map(f => <code key={f} style={{ background: "#eff6ff", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", color: "#1d4ed8" }}>{f}</code>)}
+                                {silverDims.length > 0 && <>
+                                  <span style={{ color: "#64748b" }}>·</span>
+                                  <span style={{ color: "#64748b", fontWeight: 600 }}>dims:</span>
+                                  {silverDims.slice(0,5).map(d => <code key={d} style={{ background: "#f0fdf4", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", color: "#065f46" }}>{d}</code>)}
+                                </>}
+                                <ArrowRight size={10} style={{ color: "#94a3b8" }} />
+                                <code style={{ background: "#fef9c3", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", color: "#854d0e", fontWeight: 700 }}>gold.{k.targetTable}</code>
+                              </div>
+                              <textarea
+                                placeholder={phSql}
+                                value={sqlConfig[k.targetTable]?.gold ?? ""}
+                                onChange={e => setSqlConfig(p => ({ ...p, [k.targetTable]: { ...(p[k.targetTable] ?? {}), gold: e.target.value } }))}
+                                style={{ width: "100%", height: 150, fontFamily: "monospace", fontSize: 11, padding: 8, borderRadius: 6, border: "1px solid #cbd5e1", resize: "vertical", background: "#f8fafc", boxSizing: "border-box" }} />
+                              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, alignItems: "center" }}>
+                                <span style={{ fontSize: 10, color: "#94a3b8" }}>Aggregates from silver → gold.{k.targetTable}</span>
+                                {sqlConfig[k.targetTable]?.gold?.trim() && (
+                                  <button onClick={() => setSqlConfig(p => ({ ...p, [k.targetTable]: { ...p[k.targetTable], gold: "" } }))}
+                                    style={{ fontSize: 11, color: "#b91c1c", background: "none", border: "none", cursor: "pointer" }}>Clear</button>
+                                )}
                               </div>
                             </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

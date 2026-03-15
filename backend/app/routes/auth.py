@@ -21,13 +21,15 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
+from app.storage import get_data_dir
+
 router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SECRET_KEY    = os.getenv("AUTH_SECRET_KEY", "ilink-erp-fabric-secret-key-2024")
 ALGORITHM     = "HS256"
 TOKEN_EXPIRE_H = 8
-USERS_FILE    = Path(__file__).parent.parent / "users.json"
+USERS_FILE    = get_data_dir() / "users.json"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 

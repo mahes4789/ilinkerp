@@ -15,11 +15,13 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter
 
+from app.storage import get_data_dir
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_CACHE_FILE = Path(__file__).parent.parent.parent / "erp_docs_cache.json"
+_CACHE_FILE = get_data_dir() / "erp_docs_cache.json"
 _CACHE_TTL  = timedelta(hours=24)
 
 # ── In-memory cache (loaded at import time) ──────────────────────────────────

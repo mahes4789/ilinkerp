@@ -17,6 +17,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 
+from app.storage import get_data_dir
+
 router = APIRouter()
 
 FABRIC_API = "https://api.fabric.microsoft.com/v1"
@@ -25,7 +27,7 @@ FABRIC_API = "https://api.fabric.microsoft.com/v1"
 _ms_token: dict = {}
 
 # ── Persistent UI Connection Store ────────────────────────────────────────────
-_STORE_FILE = Path(__file__).parent.parent.parent / "connections.json"
+_STORE_FILE = get_data_dir() / "connections.json"
 
 
 class _ConnectionStore:
@@ -121,7 +123,7 @@ class _ConnectionStore:
 _conn_store = _ConnectionStore()
 
 # ── Local ERP→Fabric Connection Persistence ────────────────────────────────────
-_LOCAL_CONN_FILE = Path(__file__).parent.parent.parent / "local_connections.json"
+_LOCAL_CONN_FILE = get_data_dir() / "local_connections.json"
 
 
 def _load_local_conns() -> dict:

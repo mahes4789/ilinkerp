@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 import httpx
 
+from app.storage import get_data_dir
+
 router = APIRouter()
 
 # ── ERP Source catalogue ──────────────────────────────────────────────────────
@@ -621,7 +623,7 @@ async def scan_tables(body: dict):
 
 
 # ── ERP Config Persistence ─────────────────────────────────────────────────────
-_ERP_CONFIG_FILE = Path(__file__).parent.parent.parent / "erp_configs.json"
+_ERP_CONFIG_FILE = get_data_dir() / "erp_configs.json"
 _erp_configs: dict = {}  # {name: {name, source, module, conn_fields_sans_password}}
 
 # Load on startup
