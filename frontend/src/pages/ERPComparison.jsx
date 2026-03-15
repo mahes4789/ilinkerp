@@ -169,7 +169,7 @@ export default function ERPComparison() {
   const fields = fieldData?.fields ?? [];
 
   return (
-    <div style={{ padding: "24px 28px", maxWidth: 1400 }}>
+    <div style={{ padding: "24px 28px", width: "100%" }}>
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>

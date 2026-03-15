@@ -484,7 +484,6 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
   const [scanResult,     setScanResult]     = useState(null);  // { found:[], missing:[], method, note, error }
   const [selectedTables, setSelectedTables] = useState([]); // table_name strings
   const [filter,         setFilter]         = useState("");  // search filter
-  const [expandedCols,   setExpandedCols]   = useState(null); // table_name whose columns are expanded
   const [copiedCols,     setCopiedCols]     = useState(null); // brief "copied!" feedback
 
   const { data: stdData, isLoading } = useQuery({
@@ -730,7 +729,7 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
         </div>
       ) : (
         <div style={{ border: "1px solid var(--color-border)", borderRadius: 12,
-                      overflow: "hidden", maxHeight: 420, overflowY: "auto" }}>
+                      overflow: "hidden", maxHeight: "calc(100vh - 400px)", minHeight: 240, overflowY: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
               <tr style={{ background: "#f8fafc",
@@ -749,7 +748,6 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
                 const isMissing  = scanned && !t.found;
                 const cols       = t.columns ?? [];           // string[] if backend provides them
                 const colCsv     = cols.join(", ");
-                const isColOpen  = expandedCols === t.table_name;
                 const silverName = _guessTargetName(t.table_name);
                 const bizName    = _guessBusinessName(t.table_name);
                 return (
@@ -758,7 +756,7 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
                     key={t.table_name}
                     onClick={() => !isMissing && toggleTable(t.table_name)}
                     style={{
-                      borderBottom: isColOpen ? "none" : "1px solid #f1f5f9",
+                      borderBottom: "1px solid #f1f5f9",
                       background: isMissing   ? "#fffbeb"
                                 : checked     ? "rgba(8,145,178,0.04)"
                                 :               "white",
@@ -816,45 +814,51 @@ function StepDiscover({ wizard, setWizard, onNext, onBack }) {
                         </span>
                       )}
                     </td>
-                    {/* Columns CSV cell */}
-                    <td style={{ padding: "9px 12px" }} onClick={e => e.stopPropagation()}>
+                    {/* Columns cell — inline badges */}
+                    <td style={{ padding: "8px 12px", maxWidth: 300 }} onClick={e => e.stopPropagation()}>
                       {cols.length > 0 ? (
-                        <button
-                          onClick={() => setExpandedCols(isColOpen ? null : t.table_name)}
-                          style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 10, fontWeight: 600, borderRadius: 6, border: "1px solid #c7d2fe", background: isColOpen ? "#e0e7ff" : "#f5f3ff", color: "#4338ca", cursor: "pointer", whiteSpace: "nowrap" }}>
-                          <Table2 size={9} /> {cols.length} cols {isColOpen ? "▲" : "▼"}
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: 10, color: "#cbd5e1" }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                  {/* Expanded columns row */}
-                  {isColOpen && cols.length > 0 && (
-                    <tr key={`${t.table_name}-cols`} style={{ background: "#fafafa", borderBottom: "1px solid #f1f5f9" }}>
-                      <td colSpan={7} style={{ padding: "8px 16px 12px 56px" }}>
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 10, fontWeight: 600, color: "#6366f1", marginBottom: 4 }}>
-                              Columns as CSV — {t.table_name} ({cols.length} columns)
-                            </div>
-                            <div style={{ fontFamily: "monospace", fontSize: 11, color: "#374151", background: "#f1f5f9", padding: "7px 10px", borderRadius: 6, border: "1px solid #e2e8f0", lineHeight: 1.8, wordBreak: "break-all" }}>
-                              {colCsv}
-                            </div>
-                          </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center" }}>
+                          {cols.slice(0, 14).map(col => (
+                            <span key={col} style={{
+                              fontSize: 9, fontFamily: "monospace", fontWeight: 500,
+                              padding: "1px 5px", borderRadius: 4,
+                              background: "#f0f9ff", color: "#0369a1",
+                              border: "1px solid #bae6fd", whiteSpace: "nowrap",
+                            }}>
+                              {col}
+                            </span>
+                          ))}
+                          {cols.length > 14 && (
+                            <span style={{
+                              fontSize: 9, fontWeight: 600, color: "#64748b",
+                              padding: "1px 5px", borderRadius: 4,
+                              background: "#f1f5f9", border: "1px solid #e2e8f0",
+                            }}>
+                              +{cols.length - 14} more
+                            </span>
+                          )}
                           <button
                             onClick={() => {
                               navigator.clipboard.writeText(colCsv).catch(() => {});
                               setCopiedCols(t.table_name);
                               setTimeout(() => setCopiedCols(null), 1800);
                             }}
-                            style={{ padding: "5px 10px", fontSize: 10, fontWeight: 700, borderRadius: 6, border: "1px solid #c7d2fe", background: copiedCols === t.table_name ? "#dcfce7" : "#e0e7ff", color: copiedCols === t.table_name ? "#15803d" : "#4338ca", cursor: "pointer", whiteSpace: "nowrap", marginTop: 20 }}>
-                            {copiedCols === t.table_name ? "✓ Copied!" : <><Copy size={9} style={{ display: "inline", marginRight: 3 }} />Copy CSV</>}
+                            title="Copy all columns as CSV"
+                            style={{
+                              fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4,
+                              border: "1px solid #c7d2fe",
+                              background: copiedCols === t.table_name ? "#dcfce7" : "#e0e7ff",
+                              color: copiedCols === t.table_name ? "#15803d" : "#4338ca",
+                              cursor: "pointer", whiteSpace: "nowrap",
+                            }}>
+                            {copiedCols === t.table_name ? "✓" : <Copy size={8} />}
                           </button>
                         </div>
-                      </td>
-                    </tr>
-                  )}
+                      ) : (
+                        <span style={{ fontSize: 10, color: "#cbd5e1" }}>—</span>
+                      )}
+                    </td>
+                  </tr>
                   </>
                 );
               })}

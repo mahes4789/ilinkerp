@@ -28,6 +28,9 @@ yarn-error.log*
 # Build artifacts
 *.pyc
 *.pycache
+backend/.python_packages/
+backend/static/
+deploy.zip
 
 # Nested clone (accidentally cloned inside project root)
 iLinkERP-Fabric/
