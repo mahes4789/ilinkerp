@@ -22,8 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # ── React frontend ────────────────────────────────────────────────────
-      # cache: 'npm' reuses node_modules across runs when package-lock.json
-      # is unchanged — saves ~2-3 min on most pushes.
+      # npm cache: restores node_modules in ~5s when package-lock.json is unchanged.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -33,35 +32,41 @@ jobs:
       - name: Build React frontend
         run: cd frontend && npm ci && npm run build
 
-      # ── Python dependencies ───────────────────────────────────────────────
-      # Install packages straight into backend/.python_packages so they are
-      # shipped with the code.  Azure App Service natively adds
-      # .python_packages/lib/site-packages to PYTHONPATH, so Oryx (the
-      # Azure-side pip install) is not needed at all.
-      # cache: 'pip' reuses the pip HTTP cache — saves ~2-3 min when
-      # requirements.txt hasn't changed.
+      # ── Python packages ───────────────────────────────────────────────────
+      # Cache the INSTALLED packages folder keyed on requirements.txt hash.
+      # Cache hit  → entire pip install step is skipped   (~10s restore vs ~3 min install)
+      # Cache miss → install runs and the result is saved for next run
+      - name: Cache installed Python packages
+        id: cache-py-pkgs
+        uses: actions/cache@v4
+        with:
+          path: backend/.python_packages
+          key: py-pkgs-linux-3.11-${{ hashFiles('backend/requirements.txt') }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: backend/requirements.txt
 
       - name: Install Python packages into deployment bundle
+        if: steps.cache-py-pkgs.outputs.cache-hit != 'true'
         run: |
           pip install \
             --target backend/.python_packages/lib/site-packages \
             -r backend/requirements.txt
 
-      # ── Assemble zip ──────────────────────────────────────────────────────
+      # ── Assemble deployment zip ───────────────────────────────────────────
+      # zip -x patterns: zip uses -x (not --exclude) and plain globs (no **).
+      # Excluding __pycache__, .pyc, .pyo and .dist-info metadata keeps zip lean.
       - name: Assemble deployment zip
         run: |
           mkdir -p backend/static
           cp -r frontend/dist/. backend/static/
           cd backend
           zip -r ../deploy.zip . \
-            --exclude "**/__pycache__/*" \
-            --exclude "**/*.pyc" \
-            --exclude "**/*.pyo"
+            -x "*/__pycache__/*" \
+            -x "*/.dist-info/*" \
+            -x "*.pyc" \
+            -x "*.pyo"
           echo "Zip size: $(du -sh ../deploy.zip | cut -f1)"
 
       # ── Azure ─────────────────────────────────────────────────────────────
@@ -72,8 +77,8 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_94DC9CA9B4D4482DB44FDF956DB5A691 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B76A997D4E70466B9214833E09942CB0 }}
 
-      # Resolve resource group — skips the slow `az webapp list` call on
-      # repeat runs if you add AZURE_RESOURCE_GROUP as a repo secret.
+      # Use AZURE_RESOURCE_GROUP repo secret to skip the slow az webapp list call.
+      # To set it: GitHub repo → Settings → Secrets → New secret → AZURE_RESOURCE_GROUP
       - name: Resolve resource group
         run: |
           if [ -n "${{ secrets.AZURE_RESOURCE_GROUP }}" ]; then
@@ -81,16 +86,18 @@ jobs:
           else
             RG=$(az webapp list \
               --query "[?name=='$WEBAPP_NAME'].resourceGroup" -o tsv)
-            if [ -z "$RG" ]; then
-              echo "ERROR: web app '$WEBAPP_NAME' not found" >&2; exit 1
-            fi
+            [ -z "$RG" ] && { echo "ERROR: '$WEBAPP_NAME' not found" >&2; exit 1; }
             echo "RG=$RG" >> $GITHUB_ENV
           fi
 
-      # One-time idempotent settings — fast after the first run.
-      # SCM_DO_BUILD_DURING_DEPLOYMENT=false  →  skip Azure-side pip install
-      # PYTHONPATH points to the packages we already shipped in the zip.
+      # Skip on regular code pushes — these settings only change when
+      # requirements.txt or the workflow file itself is modified.
+      # On workflow_dispatch (manual run) it always executes.
       - name: Configure Azure Web App settings
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          contains(github.event.head_commit.modified, 'backend/requirements.txt') ||
+          contains(github.event.head_commit.modified, '.github/workflows/main_ilinkerpinteg.yml')
         run: |
           az webapp config appsettings set \
             --resource-group "$RG" --name "$WEBAPP_NAME" \
