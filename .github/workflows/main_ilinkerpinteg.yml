@@ -67,7 +67,15 @@ jobs:
         with:
           azcliversion: 2.64.0
           inlineScript: |
+            echo "=== Azure account context ==="
+            az account show --query "{name:name, id:id, tenantId:tenantId}" -o json
+
+            echo "=== Attempting to locate web app 'ilinkerpinteg' ==="
+            az webapp show --name ilinkerpinteg || true
+
             RG=$(az webapp show --name ilinkerpinteg --query resourceGroup -o tsv)
+            echo "Resolved RG='$RG'"
+
             if [ -z "$RG" ]; then
               echo "ERROR: Could not determine resource group for web app 'ilinkerpinteg'." >&2
               az webapp list --query "[?name=='ilinkerpinteg']" -o table
