@@ -1,8 +1,11 @@
 """ilinkERP Fabric Accelerate — FastAPI backend."""
 import asyncio
 import logging
-from fastapi import FastAPI
+import os
+from pathlib import Path
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from app.routes import erp_data, fabric_api, erp_scraper, auth
 
 app = FastAPI(
@@ -43,3 +46,31 @@ async def startup_refresh():
 @app.get("/health")
 async def health():
     return {"status": "ok", "app": "ilinkERP Fabric Accelerate"}
+
+
+# --- Serve React frontend (must be last) ---
+_static_dir = Path(__file__).parent / "static"
+
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """Serve the React SPA for all non-API routes."""
+    if not _static_dir.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+
+    # Resolve the requested file safely (prevent path traversal)
+    target = (_static_dir / full_path).resolve()
+    try:
+        target.relative_to(_static_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400)
+
+    if target.is_file():
+        return FileResponse(str(target))
+
+    # SPA fallback — let React Router handle the path
+    index = _static_dir / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
+
+    raise HTTPException(status_code=404)
