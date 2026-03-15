@@ -23,6 +23,7 @@ export function AuthProvider({ children }) {
     if (!token) { setIsLoading(false); return; }
     axios.get(`${API}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
+      timeout: 8000,
     })
       .then(({ data }) => setUser(data))
       .catch(() => {
