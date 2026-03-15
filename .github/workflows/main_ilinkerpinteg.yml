@@ -70,15 +70,22 @@ jobs:
             echo "=== Azure account context ==="
             az account show --query "{name:name, id:id, tenantId:tenantId}" -o json
 
-            echo "=== Attempting to locate web app 'ilinkerpinteg' ==="
-            az webapp show --name ilinkerpinteg || true
+            echo "=== Subscriptions available to the service principal ==="
+            az account list -o table
 
-            RG=$(az webapp show --name ilinkerpinteg --query resourceGroup -o tsv)
+            echo "=== All Web Apps in current subscription (for debugging) ==="
+            az webapp list -o table
+
+            echo "=== Locating web app 'ilinkerpinteg' (searching list) ==="
+            WEBAPP_JSON=$(az webapp list --query "[?name=='ilinkerpinteg']" -o json)
+            echo "Found entries: $(echo "$WEBAPP_JSON" | jq -c '. | length')"
+
+            RG=$(echo "$WEBAPP_JSON" | jq -r '.[0].resourceGroup')
             echo "Resolved RG='$RG'"
 
-            if [ -z "$RG" ]; then
+            if [ -z "$RG" ] || [ "$RG" = "null" ]; then
               echo "ERROR: Could not determine resource group for web app 'ilinkerpinteg'." >&2
-              az webapp list --query "[?name=='ilinkerpinteg']" -o table
+              echo "$WEBAPP_JSON" | jq -r .
               exit 1
             fi
 
