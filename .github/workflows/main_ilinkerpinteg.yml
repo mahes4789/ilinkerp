@@ -62,26 +62,26 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_94DC9CA9B4D4482DB44FDF956DB5A691 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B76A997D4E70466B9214833E09942CB0 }}
 
-      - name: Ensure required secrets exist
-        run: |
-          if [ -z "${{ secrets.AZURE_RESOURCE_GROUP }}" ]; then
-            echo "ERROR: Secret 'AZURE_RESOURCE_GROUP' is not set. Please create it in the repo settings." >&2
-            exit 1
-          fi
-
-      - name: Set Web App settings (persisted storage + port)
+      - name: Discover resource group from App Service
         uses: azure/CLI@v1
         with:
           azcliversion: 2.64.0
           inlineScript: |
+            RG=$(az webapp show --name ilinkerpinteg --query resourceGroup -o tsv)
+            if [ -z "$RG" ]; then
+              echo "ERROR: Could not determine resource group for web app 'ilinkerpinteg'." >&2
+              az webapp list --query "[?name=='ilinkerpinteg']" -o table
+              exit 1
+            fi
+
             az webapp config appsettings set \
-              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --resource-group "$RG" \
               --name ilinkerpinteg \
               --settings WEBSITES_PORT=8001 APP_DATA_DIR=/home/data SCM_DO_BUILD_DURING_DEPLOYMENT=true
 
             # Ensure the runtime startup command is correct (uvicorn for FastAPI)
             az webapp config set \
-              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --resource-group "$RG" \
               --name ilinkerpinteg \
               --startup-file "uvicorn main:app --host 0.0.0.0 --port 8001"
 
